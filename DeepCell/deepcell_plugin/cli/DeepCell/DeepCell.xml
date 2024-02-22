@@ -42,14 +42,6 @@
       <channel>input</channel>
       <index>3</index>
     </integer>
-    <integer>
-      <name>cyto_pixels</name>
-      <label>Cytoplasm Pixels</label>
-      <description>Amount of pixels to dilate from nuclei (without label overlap).</description>
-      <default>10</default>
-      <channel>input</channel>
-      <index>4</index>
-    </integer>
   </parameters>
   <parameters advanced="true">
     <label>Girder API URL and Key</label>
@@ -59,7 +51,7 @@
       <longflag>patch-size</longflag>
       <label>Patch Size</label>
       <description>Size of patches to extract across selected region</description>
-      <default>1024</default>
+      <default>256</default>
     </integer>
     <string>
       <name>girderApiUrl</name>

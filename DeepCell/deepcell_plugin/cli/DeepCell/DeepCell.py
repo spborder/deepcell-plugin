@@ -32,6 +32,10 @@ from deepcell.applications import NuclearSegmentation
 from skimage.morphology import remove_small_objects
 from scipy import ndimage as ndi
 
+import requests
+from PIL import Image
+from io import BytesIO
+
 import wsi_annotations_kit.wsi_annotations_kit as wak
 
 import girder_client
@@ -112,17 +116,19 @@ class Patches:
 
 
 class DeepCellHandler:
-    def __init__(self, min_size:int):
+    def __init__(self, user_token: str, min_size:int):
 
         # Initializing NuclearSegmentation application with default parameters
         self.model = NuclearSegmentation()
         
+        self.user_token = user_token
         self.min_size = min_size
 
-    def predict(self,image:np.array,region_coords:list):
+    def predict(self,region_coords:list, frame_index:int):
 
         # This expects an input image with channels XY (grayscale)
         # Step 1: Expanding image dimensions to expected rank (4)
+        image = self.get_image_region(region_coords,frame_index)        
         image = image[None,:,:,None]
 
         # Step 2: Generate labeled image
@@ -146,6 +152,12 @@ class DeepCellHandler:
         #TODO:Merging nuclei on the boundaries of the current region
 
         return json_annotations
+
+    def get_image_region(self,coords_list,frame_index):
+
+        image_region = Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content))
+
+        return image_region
 
     def merge_adjacent_nuclei(self):
         #TODO: This should check an adjacency matrix or something and find where there's overlapping objects.
@@ -196,7 +208,8 @@ def main(args):
 
     # Initializing deepcell object
     cell_finder = DeepCellHandler(
-        args.min_size
+        args.min_size,
+        args.girderToken
     )
 
     # Initializing empty annotations object
@@ -216,7 +229,7 @@ def main(args):
             print(f'On patch: {patch_maker.patch_idx+1} of {len(patch_maker.regions_list)}')
 
             # Getting features and annotations within that region
-            region_annotations = cell_finder.predict(next_region)
+            region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
 
             print(f'Found: {len(region_annotations[0]["annotation"]["elements"])} Nuclei')
 
