@@ -81,7 +81,7 @@ WORKDIR $deep_cell_path
 
 # Installing packages in setup.py
 RUN pip install --no-cache-dir --upgrade --ignore-installed pip setuptools && \
-    pip install --no-cache-dir .  --find-links https://girder.github.io/large_image_wheels && \
+    pip install --no-cache-dir . && \
     rm -rf /root/.cache/pip/*
 
 # Show what was installed
@@ -93,7 +93,7 @@ WORKDIR $deep_cell_path/deepcell_plugin/cli
 # Test our entrypoint.  If we have incompatible versions of numpy and
 # openslide, one of these will fail
 RUN python -m slicer_cli_web.cli_list_entrypoint --list_cli
-RUN python -m slicer_cli_web.cli_list_entrypoint DeepCell --help
+RUN python -m slicer_cli_web.cli_list_entrypoint DeepCell_Plugin --help
 
 
 ENTRYPOINT ["/bin/bash", "docker-entrypoint.sh"]

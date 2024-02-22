@@ -31,7 +31,7 @@ def prerelease_local_scheme(version):
 
 
 setup(
-    name='DeepCell',
+    name='DeepCell_Plugin',
     use_scm_version={'local_scheme': prerelease_local_scheme},
     description='Nuclei and cytoplasm segmentation for CODEX images',
     long_description=readme,
@@ -41,26 +41,22 @@ setup(
     url='https://github.com/spborder/deepcell-plugin/',
     packages=find_packages(exclude=['tests', '*_test']),
     package_dir={
-        'DeepCell': 'DeepCell',
+        'DeepCell_Plugin': 'DeepCell_Plugin',
     },
     include_package_data=True,
     install_requires=[
-        # scientific packages
-        'numpy==1.24.3',
-        'scipy==1.10.1',
-        'Pillow==9.5.0',
+        'numpy',
+        'scipy',
+        'Pillow',
         'scikit-image',
-        'tqdm==4.65.0',
-        'openpyxl==3.1.2',
         'girder-slicer-cli-web',
         'girder-client',
-        # cli
         'ctk-cli',
         'wsi-annotations-kit',
-        'DeepCell'
+        'deepcell'
     ],
     license='Apache Software License 2.0',
-    keywords='DeepCell',
+    keywords='DeepCell_Plugin',
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'License :: OSI Approved :: Apache Software License',

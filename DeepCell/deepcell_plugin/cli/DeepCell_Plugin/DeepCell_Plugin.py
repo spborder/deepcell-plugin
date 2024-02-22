@@ -23,7 +23,6 @@ import sys
 from math import ceil, floor
 import numpy as np
 import json
-import pandas as pd
 
 from ctk_cli import CLIArgumentParser
 

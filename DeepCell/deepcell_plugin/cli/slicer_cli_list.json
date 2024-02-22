@@ -1,5 +1,5 @@
 {
-    "DeepCell": {
+    "DeepCell_Plugin": {
       "type"    : "python"
     }  
 }
