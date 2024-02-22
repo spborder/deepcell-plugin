@@ -207,7 +207,7 @@ def main(args):
 
     # Initializing deepcell object
     cell_finder = DeepCellHandler(
-        args.min_size,
+        args.minsize_nuclei,
         args.girderToken
     )
 
