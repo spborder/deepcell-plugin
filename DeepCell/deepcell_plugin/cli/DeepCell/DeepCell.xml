@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<executable>
+  <category>HistomicsTK</category>
+  <title>DeepCell Plugin</title>
+  <description>Segment nuclei in CODEX images.</description>
+  <version>0.1.0</version>
+  <documentation-url>https://github.com/spborder/deepcell-plugin/</documentation-url>
+  <license>Apache 2.0</license>
+  <contributor>Sam Border (UFL)</contributor>
+  <acknowledgements>This work is part of efforts in digital pathology by the Sarder Lab: UFL.</acknowledgements>
+  <parameters>
+    <label>IO</label>
+    <description>Input/output parameters.</description>
+    <image reference="_girder_id_">
+      <name>input_image</name>
+      <label>Input Image</label>
+      <description>Input Filename </description>
+      <channel>input</channel>
+      <index>0</index>
+    </image>
+    <region>
+      <name>input_region</name>
+      <label>Input Image Region</label>
+      <description>Select a rectangular region in the slide to run feature extraction on.</description>
+      <channel>input</channel>
+      <default></default>
+      <index>1</index>
+    </region>
+    <integer>
+      <name>nuclei_frame</name>
+      <label>Nuclei Frame</label>
+      <description>Frame index to use for nuclei segmentation</description>
+      <default>0</default>
+      <channel>input</channel>
+      <index>2</index>
+    </integer>
+    <integer>
+      <name>minsize_nuclei</name>
+      <label>Minimum Size for Nuclei</label>
+      <description> Minimum size for nuclear objects</description>
+      <default>20</default>
+      <channel>input</channel>
+      <index>3</index>
+    </integer>
+    <integer>
+      <name>cyto_pixels</name>
+      <label>Cytoplasm Pixels</label>
+      <description>Amount of pixels to dilate from nuclei (without label overlap).</description>
+      <default>10</default>
+      <channel>input</channel>
+      <index>4</index>
+    </integer>
+  </parameters>
+  <parameters advanced="true">
+    <label>Girder API URL and Key</label>
+    <description>A Girder API URL and token for Girder client</description>
+    <integer>
+      <name>patch_size</name>
+      <longflag>patch-size</longflag>
+      <label>Patch Size</label>
+      <description>Size of patches to extract across selected region</description>
+      <default>1024</default>
+    </integer>
+    <string>
+      <name>girderApiUrl</name>
+      <longflag>api-url</longflag>
+      <label>Girder API URL</label>
+      <description>A Girder API URL (e.g., https://girder.example.com:443/api/v1)</description>
+      <default></default>
+    </string>
+    <string>
+      <name>girderToken</name>
+      <longflag>token</longflag>
+      <label>Girder API Token</label>
+      <description>A Girder token identifying a user session</description>
+      <default></default>
+    </string>
+  </parameters>
+</executable>
