@@ -66,6 +66,7 @@ ENV build_path=$PWD/build
 ENV PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 # Setting deepcell access token (expires after 90 days)
+ARG DEEPCELL_ACCESS_TOKEN=DEEPCELL_ACCESS_TOKEN
 ENV DEEPCELL_ACCESS_TOKEN=$DEEPCELL_ACCESS_TOKEN
 
 # Copying location of deepcell plugin scripts
