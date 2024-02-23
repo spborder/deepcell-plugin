@@ -121,6 +121,7 @@ class DeepCellHandler:
         self.model = NuclearSegmentation()
         
         self.gc = gc
+        self.image_id = image_id
         self.user_token = user_token
         self.min_size = min_size
 
