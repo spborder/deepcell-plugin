@@ -115,11 +115,12 @@ class Patches:
 
 
 class DeepCellHandler:
-    def __init__(self, user_token: str, min_size:int):
+    def __init__(self, gc, image_id: str, user_token: str, min_size:int):
 
         # Initializing NuclearSegmentation application with default parameters
         self.model = NuclearSegmentation()
         
+        self.gc = gc
         self.user_token = user_token
         self.min_size = min_size
 
@@ -154,7 +155,7 @@ class DeepCellHandler:
 
     def get_image_region(self,coords_list,frame_index):
 
-        image_region = Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content))
+        image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
 
         return image_region
 
@@ -207,6 +208,8 @@ def main(args):
 
     # Initializing deepcell object
     cell_finder = DeepCellHandler(
+        gc,
+        image_id,
         args.minsize_nuclei,
         args.girderToken
     )
