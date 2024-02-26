@@ -32,7 +32,7 @@ from skimage.morphology import remove_small_objects
 from scipy import ndimage as ndi
 
 import requests
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
 import wsi_annotations_kit.wsi_annotations_kit as wak
@@ -88,12 +88,12 @@ class Patches:
                 for y in range(0,n_patch_y):
 
                     # Finding patch start coordinates
-                    patch_start_x = np.minimum(self.region[0]+(x*self.patch_size),(self.region[0]+self.region[2])-((self.region[0]+self.region[2])%self.patch_size))
-                    patch_start_y = np.minimum(self.region[0]+(y*self.patch_size),(self.region[1]+self.region[3])-((self.region[1]+self.region[3])%self.patch_size))
+                    patch_start_x = np.minimum(self.region[0]+(x*self.patch_size),region_width-(region_width%self.patch_size))
+                    patch_start_y = np.minimum(self.region[1]+(y*self.patch_size),region_height-(region_height%self.patch_size))
 
                     # Finding patch end coordinates
-                    patch_end_x = np.minimum(patch_start_x+self.patch_size, (self.region[0]+self.region[2]))
-                    patch_end_y = np.minimum(patch_start_y+self.patch_size,(self.region[1]+self.region[3]))
+                    patch_end_x = np.minimum(patch_start_x+self.patch_size, region_width)
+                    patch_end_y = np.minimum(patch_start_y+self.patch_size, region_height)
 
                     patch_regions_list.append([patch_start_x,patch_start_y,patch_end_x,patch_end_y])
             
@@ -129,36 +129,57 @@ class DeepCellHandler:
 
         # This expects an input image with channels XY (grayscale)
         # Step 1: Expanding image dimensions to expected rank (4)
-        image = self.get_image_region(region_coords,frame_index)        
-        image = image[None,:,:,None]
+        image = self.get_image_region(region_coords,frame_index)
+        if not image is None:        
+            image = image[None,:,:,None]
 
-        # Step 2: Generate labeled image
-        labeled_image = self.model.predict(image)
+            # Step 2: Generate labeled image
+            labeled_image = self.model.predict(image)
+            print(f'Nuclei: {np.max(labeled_image)}')
 
-        # Step 3: Removing small pieces
-        processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
+            # Getting rid of the extra dimensions
+            labeled_image = np.squeeze(labeled_image)
 
-        # Step 4: Creating annotations for this image
-        processed_nuclei[processed_nuclei>0] = 1
+            # Step 3: Removing small pieces
+            processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
+            print(f'After removing small objects nuclei area: {np.sum(processed_nuclei)}')
+            # Step 4: Creating annotations for this image
+            processed_nuclei[processed_nuclei>0] = 1
+            processed_nuclei[processed_nuclei!=1] = 0
+            print(f'unique values: {np.unique(processed_nuclei)}')
+            print(f'shape of processed_nuclei: {np.shape(processed_nuclei)}')
 
-        annotations = wak.Annotation()
-        annotations.add_mask(
-            mask = processed_nuclei,
-            box_crs = [region_coords[0],region_coords[1]],
-            mask_type = 'labeled'
-        )
+            annotations = wak.Annotation()
+            annotations.add_mask(
+                mask = processed_nuclei,
+                box_crs = [region_coords[0],region_coords[1]],
+                mask_type = 'labeled',
+                structure = 'CODEX Nuclei'
+            )
 
-        json_annotations = wak.Histomics(annotations).json
+            json_annotations = wak.Histomics(annotations).json
 
-        #TODO:Merging nuclei on the boundaries of the current region
+            #TODO:Merging nuclei on the boundaries of the current region
 
-        return json_annotations
+            return json_annotations
+        else:
+            print('No image, some PIL.UnidentifiedImageError thing')
+            return None
 
     def get_image_region(self,coords_list,frame_index):
+        
+        print(coords_list)
+        try:
+            image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+            return image_region
+        except UnidentifiedImageError:
+            print('Error found :(')
+            print(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}')
 
-        image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+            response = requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}')
+            print(f'Status Code: {response.status_code}')
 
-        return image_region
+            return None
 
     def merge_adjacent_nuclei(self):
         #TODO: This should check an adjacency matrix or something and find where there's overlapping objects.
@@ -211,8 +232,8 @@ def main(args):
     cell_finder = DeepCellHandler(
         gc,
         image_id,
-        args.minsize_nuclei,
-        args.girderToken
+        args.girderToken,
+        args.minsize_nuclei
     )
 
     # Initializing empty annotations object
