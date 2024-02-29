@@ -28,6 +28,7 @@ from ctk_cli import CLIArgumentParser
 
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
+from deepcell.utils import extract_archive
 from skimage.morphology import remove_small_objects
 from scipy import ndimage as ndi
 
@@ -36,6 +37,9 @@ from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
 import wsi_annotations_kit.wsi_annotations_kit as wak
+
+from pathlib import Path
+import tensorflow as tf
 
 import girder_client
 
@@ -117,9 +121,38 @@ class Patches:
 class DeepCellHandler:
     def __init__(self, gc, image_id: str, user_token: str, min_size:int):
 
-        # Initializing NuclearSegmentation application with default parameters
-        self.model = NuclearSegmentation()
-        
+
+        # Loading model (itemId for EC2)
+        self.nuclear_segmentation_model_id = "65e0c399adb89a58fea1152b"
+        # Attempting to download the model:
+        try:
+            self.model_path = Path.home() / ".deepcell/models"
+            if not os.path.exists(self.model_path):
+                os.makedirs(self.model_path)
+
+            _ = gc.downloadItem(
+                itemId = self.nuclear_segmentation_model_id,
+                dest = self.model_path,
+                name = 'NuclearSegmentation-75.tar.gz'
+            )
+
+            # Extracting files from archive
+            extract_archive(self.model_path+'NuclearSegmentation-75.tar.gz',self.model_path)
+
+            # loading model
+            model_weights = tf.keras.models.load_model(self.model_path+'NuclearSegmentation')
+
+            self.model = NuclearSegmentation(model = model_weights)
+
+            print('Using server-hosted model version')
+
+        except girder_client.HttpError:
+            print('File not found at provided id')
+            
+            # Downloading model
+            # Initializing NuclearSegmentation application with default parameters
+            self.model = NuclearSegmentation()
+
         self.gc = gc
         self.image_id = image_id
         self.user_token = user_token
