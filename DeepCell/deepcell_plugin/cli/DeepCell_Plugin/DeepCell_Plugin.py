@@ -137,10 +137,11 @@ class DeepCellHandler:
             )
 
             # Extracting files from archive
-            extract_archive(self.model_path+'NuclearSegmentation-75.tar.gz',self.model_path)
+            extract_archive(self.model_path / 'NuclearSegmentation-75.tar.gz',self.model_path)
 
             # loading model
-            model_weights = tf.keras.models.load_model(self.model_path+'NuclearSegmentation')
+            model_weights = self.model_path / 'NuclearSegmentation'
+            model_weights = tf.keras.models.load_model(model_weights)
 
             self.model = NuclearSegmentation(model = model_weights)
 
