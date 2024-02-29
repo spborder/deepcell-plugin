@@ -92,12 +92,12 @@ class Patches:
                 for y in range(0,n_patch_y):
 
                     # Finding patch start coordinates
-                    patch_start_x = np.minimum(self.region[0]+(x*self.patch_size),region_width-(region_width%self.patch_size))
-                    patch_start_y = np.minimum(self.region[1]+(y*self.patch_size),region_height-(region_height%self.patch_size))
+                    patch_start_x = np.minimum(self.region[0]+(x*self.patch_size),(self.region[0]+region_width)-(region_width%self.patch_size))
+                    patch_start_y = np.minimum(self.region[1]+(y*self.patch_size),(self.region[1]+region_height)-(region_height%self.patch_size))
 
                     # Finding patch end coordinates
-                    patch_end_x = np.minimum(patch_start_x+self.patch_size, region_width)
-                    patch_end_y = np.minimum(patch_start_y+self.patch_size, region_height)
+                    patch_end_x = np.minimum(patch_start_x+self.patch_size, (self.region[0]+region_width))
+                    patch_end_y = np.minimum(patch_start_y+self.patch_size, (self.region[1]+region_height))
 
                     patch_regions_list.append([patch_start_x,patch_start_y,patch_end_x,patch_end_y])
             
@@ -168,19 +168,15 @@ class DeepCellHandler:
 
             # Step 2: Generate labeled image
             labeled_image = self.model.predict(image)
-            print(f'Nuclei: {np.max(labeled_image)}')
 
             # Getting rid of the extra dimensions
             labeled_image = np.squeeze(labeled_image)
 
             # Step 3: Removing small pieces
             processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
-            print(f'After removing small objects nuclei area: {np.sum(processed_nuclei)}')
             # Step 4: Creating annotations for this image
             processed_nuclei[processed_nuclei>0] = 1
             processed_nuclei[processed_nuclei!=1] = 0
-            print(f'unique values: {np.unique(processed_nuclei)}')
-            print(f'shape of processed_nuclei: {np.shape(processed_nuclei)}')
 
             annotations = wak.Annotation()
             annotations.add_mask(
@@ -201,7 +197,6 @@ class DeepCellHandler:
 
     def get_image_region(self,coords_list,frame_index):
         
-        print(coords_list)
         try:
             image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
             return image_region
@@ -241,12 +236,13 @@ def main(args):
     print(f'Working on: {image_info["name"]}')
 
     # Copying it over to the plugin filesystem
+    """
     _ = gc.downloadFile(
             fileId = args.input_image,
             path = f'/{image_info["name"]}',
         )
     print(f'Image copied successfully! {image_info["name"] in os.listdir("/")}')
-
+    """
     image_tiles_info = gc.get(f'/item/{image_id}/tiles')
     print(f'Image has {len(image_tiles_info["frames"])} Channels!')
     print(f'Image is {image_tiles_info["sizeY"]} x {image_tiles_info["sizeX"]}')
