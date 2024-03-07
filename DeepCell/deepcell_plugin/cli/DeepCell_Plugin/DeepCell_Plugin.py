@@ -43,7 +43,7 @@ import tensorflow as tf
 
 import girder_client
 
-
+"""
 class Patches:
     def __init__(self,
                  image_id:str,
@@ -116,6 +116,7 @@ class Patches:
             return self.regions_list[self.patch_idx]
         else:
             raise StopIteration
+"""
 
 
 class DeepCellHandler:
@@ -179,7 +180,8 @@ class DeepCellHandler:
             processed_nuclei[processed_nuclei>0] = 1
             processed_nuclei[processed_nuclei!=1] = 0
 
-            annotations = wak.Annotation()
+            #annotations = wak.Annotation()
+            """
             annotations.add_mask(
                 mask = processed_nuclei,
                 box_crs = [region_coords[0],region_coords[1]],
@@ -188,10 +190,9 @@ class DeepCellHandler:
             )
 
             json_annotations = wak.Histomics(annotations).json
+            """
 
-            #TODO:Merging nuclei on the boundaries of the current region
-
-            return json_annotations
+            return processed_nuclei
         else:
             print('No image, some PIL.UnidentifiedImageError thing')
             return None
@@ -210,12 +211,7 @@ class DeepCellHandler:
 
             return None
 
-    def merge_adjacent_nuclei(self):
-        #TODO: This should check an adjacency matrix or something and find where there's overlapping objects.
-        # Overwriting where necessary.
-        # It might have a lot of requirements. Maybe have to keep the annotations for each patch as a list or at least the edge-patches
-        # Once a patch is completely closed in it won't need to be checked any more.
-        pass
+
 
 
 
@@ -249,6 +245,7 @@ def main(args):
     print(f'Image is {image_tiles_info["sizeY"]} x {image_tiles_info["sizeX"]}')
 
     # Creating patch iterator 
+    """
     patch_maker = Patches(
         image_id = image_id,
         patch_size = args.patch_size,
@@ -257,7 +254,7 @@ def main(args):
     )
 
     patch_maker = iter(patch_maker)
-
+    """
     # Initializing deepcell object
     cell_finder = DeepCellHandler(
         gc,
@@ -267,6 +264,7 @@ def main(args):
     )
 
     # Initializing empty annotations object
+    """
     all_nuc_annotations = [{
         'annotation': {
             'name': 'CODEX Nuclei',
@@ -274,27 +272,44 @@ def main(args):
             'elements': []
         }
     }]
+    """
+
+    patch_annotations = wak.AnnotationPatches()
+    patch_annotations.define_patches(
+        region_crs = args.input_region[0:2],
+        height = args.input_region[3],
+        widht = args.input_region[2],
+        patch_height = args.patch_size,
+        patch_width = args.patch_size,
+        overlap_pct = 0 
+    )
+
+    patch_annotations = iter(patch_annotations)
 
     more_patches = True
     while more_patches:
         try:
             # Getting the next patch region
-            next_region = next(patch_maker)
-            print(f'On patch: {patch_maker.patch_idx+1} of {len(patch_maker.regions_list)}')
-
+            new_patch = next(patch_annotations)
+            print(f'On patch: {patch_annotations.patch_idx+1} of {len(patch_annotations.patch_list)}')
+            next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
             # Getting features and annotations within that region
             region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
 
-            print(f'Found: {len(region_annotations[0]["annotation"]["elements"])} Nuclei')
-
-            if not region_annotations is None:
-                # Adding to total annotations object
-                all_nuc_annotations[0]['annotation']['elements'].extend(region_annotations[0]['annotation']['elements'])
+            patch_annotations.add_patch_mask(
+                mask = region_annotations,
+                patch_obj = new_patch,
+                mask_type = 'binary',
+                structure = 'CODEX Nuclei'
+            )
 
         except StopIteration:
             more_patches = False
 
+    print('Cleaning up annotations')
+    patch_annotations.clean_patches()
 
+    all_nuc_annotations = wak.Histomics(patch_annotations).json
     # Posting annotations to item
     gc.post(f'/annotation/item/{image_id}?token={args.girderToken}',
             data = json.dumps(all_nuc_annotations),
