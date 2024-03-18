@@ -26,22 +26,14 @@
       <default></default>
       <index>1</index>
     </region>
-    <integer>
+    <string>
       <name>nuclei_frame</name>
       <label>Nuclei Frame</label>
-      <description>Frame index to use for nuclei segmentation</description>
+      <description>Frame index to use for nuclei segmentation, use comma-separated list to combine frames</description>
       <default>0</default>
       <channel>input</channel>
       <index>2</index>
-    </integer>
-    <integer>
-      <name>minsize_nuclei</name>
-      <label>Minimum Size for Nuclei</label>
-      <description> Minimum size for nuclear objects</description>
-      <default>20</default>
-      <channel>input</channel>
-      <index>3</index>
-    </integer>
+    </string>
   </parameters>
   <parameters advanced="true">
     <label>Girder API URL and Key</label>
@@ -53,6 +45,13 @@
       <description>Size of patches to extract across selected region</description>
       <default>256</default>
     </integer>
+    <string>
+      <name>deepCellApi</name>
+      <longflag>deepCell-api</longflag>
+      <label>DeepCell API Key</label>
+      <description>DeepCell API if model is not downloaded on the server side</description>
+      <default></default>
+    </string>
     <string>
       <name>girderApiUrl</name>
       <longflag>api-url</longflag>

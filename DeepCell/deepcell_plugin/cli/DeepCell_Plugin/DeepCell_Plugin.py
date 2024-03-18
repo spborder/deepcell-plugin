@@ -43,112 +43,39 @@ import tensorflow as tf
 
 import girder_client
 
-"""
-class Patches:
-    def __init__(self,
-                 image_id:str,
-                 patch_size:int,
-                 region,
-                 gc):
-        
-        self.image_id = image_id
-        self.patch_size = patch_size
-        self.region = region
-        self.gc = gc
-
-        # Getting image metadata
-        self.image_info = self.gc.get(f'/item/{self.image_id}')
-        self.image_metadata = self.gc.get(f'/item/{self.image_id}/tiles')
-
-        if len(self.region) is None:
-            self.region = [
-                0,
-                0,
-                self.image_metadata['sizeX'],
-                self.image_metadata['sizeY']
-            ]
-
-        self.regions_list = self.get_regions_list()
-        print(f'These are the regions: {self.regions_list}')
-
-    def get_regions_list(self):
-        
-        # Defining list of all possible non-overlapping regions within the selected region
-        region_height = self.region[3]
-        region_width = self.region[2]
-
-        if region_height <= self.patch_size and region_width <= self.patch_size:
-            region_list = [[int(self.region[0]),int(self.region[1]),int(self.region[0]+region_width),int(self.region[1]+region_height)]]
-
-            return region_list
-
-        else:
-            n_patch_x = ceil(region_width/self.patch_size)
-            n_patch_y = ceil(region_height/self.patch_size)
-
-            patch_regions_list = []
-
-            for x in range(0,n_patch_x):
-                for y in range(0,n_patch_y):
-
-                    # Finding patch start coordinates
-                    patch_start_x = np.minimum(self.region[0]+(x*self.patch_size),(self.region[0]+region_width)-(region_width%self.patch_size))
-                    patch_start_y = np.minimum(self.region[1]+(y*self.patch_size),(self.region[1]+region_height)-(region_height%self.patch_size))
-
-                    # Finding patch end coordinates
-                    patch_end_x = np.minimum(patch_start_x+self.patch_size, (self.region[0]+region_width))
-                    patch_end_y = np.minimum(patch_start_y+self.patch_size, (self.region[1]+region_height))
-
-                    patch_regions_list.append([patch_start_x,patch_start_y,patch_end_x,patch_end_y])
-            
-            return patch_regions_list
-
-    def __iter__(self):
-
-        self.patch_idx = -1
-
-        return self
-    
-    def __next__(self):
-
-        self.patch_idx+=1
-        if self.patch_idx<len(self.regions_list):
-            return self.regions_list[self.patch_idx]
-        else:
-            raise StopIteration
-"""
-
-
 class DeepCellHandler:
     def __init__(self, gc, image_id: str, user_token: str, min_size:int):
 
-
-        # Loading model (itemId for EC2)
-        self.nuclear_segmentation_model_id = "65e0c399adb89a58fea1152b"
+        # Loading model (list contains EC2 model id and athena model id)
+        self.nuclear_segmentation_model_id = ["65e0c399adb89a58fea1152b","65f857bfd2f45e99a914a26c"]
         # Attempting to download the model:
-        try:
-            self.model_path = Path.home() / ".deepcell/models"
-            if not os.path.exists(self.model_path):
-                os.makedirs(self.model_path)
+        self.model = None
+        for n in self.nuclear_segmentation_model_id:
+            try:
+                self.model_path = Path.home() / ".deepcell/models"
+                if not os.path.exists(self.model_path):
+                    os.makedirs(self.model_path)
 
-            _ = gc.downloadItem(
-                itemId = self.nuclear_segmentation_model_id,
-                dest = self.model_path,
-                name = 'NuclearSegmentation-75.tar.gz'
-            )
+                _ = gc.downloadItem(
+                    itemId = self.nuclear_segmentation_model_id,
+                    dest = self.model_path,
+                    name = 'NuclearSegmentation-75.tar.gz'
+                )
 
-            # Extracting files from archive
-            extract_archive(self.model_path / 'NuclearSegmentation-75.tar.gz',self.model_path)
+                # Extracting files from archive
+                extract_archive(self.model_path / 'NuclearSegmentation-75.tar.gz',self.model_path)
 
-            # loading model
-            model_weights = self.model_path / 'NuclearSegmentation'
-            model_weights = tf.keras.models.load_model(model_weights)
+                # loading model
+                model_weights = self.model_path / 'NuclearSegmentation'
+                model_weights = tf.keras.models.load_model(model_weights)
 
-            self.model = NuclearSegmentation(model = model_weights)
+                self.model = NuclearSegmentation(model = model_weights)
 
-            print('Using server-hosted model version')
-
-        except girder_client.HttpError:
+                print('Using server-hosted model version')
+            except girder_client.HttpError:
+                continue
+        
+        if self.model is None:
             print('File not found at provided id')
             
             # Downloading model
@@ -173,24 +100,12 @@ class DeepCellHandler:
 
             # Getting rid of the extra dimensions
             labeled_image = np.squeeze(labeled_image)
+            # one-hot labeling
+            processed_nuclei = labeled_image[:,:,None]
 
+            #TODO: There should be a way to add this post processing function or modify the existing deepwatershed postprocessing function
             # Step 3: Removing small pieces
-            processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
-            # Step 4: Creating annotations for this image
-            processed_nuclei[processed_nuclei>0] = 1
-            processed_nuclei[processed_nuclei!=1] = 0
-
-            #annotations = wak.Annotation()
-            """
-            annotations.add_mask(
-                mask = processed_nuclei,
-                box_crs = [region_coords[0],region_coords[1]],
-                mask_type = 'labeled',
-                structure = 'CODEX Nuclei'
-            )
-
-            json_annotations = wak.Histomics(annotations).json
-            """
+            #processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
 
             return processed_nuclei
         else:
@@ -200,7 +115,17 @@ class DeepCellHandler:
     def get_image_region(self,coords_list,frame_index):
         
         try:
-            image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+            if isinstance(frame_index,list):
+                image_region = np.zeros((int(coords_list[3]-coords_list[1]),int(coords_list[2]-coords_list[0])))
+                for f in frame_index:
+                    image_region += np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+                
+                # Return mean of intersecting channels
+                image_region /= len(frame_index)
+
+            else:
+                image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+            
             return image_region
         except UnidentifiedImageError:
             print('Error found :(')
@@ -210,8 +135,6 @@ class DeepCellHandler:
             print(f'Status Code: {response.status_code}')
 
             return None
-
-
 
 
 
@@ -232,56 +155,37 @@ def main(args):
     image_info = gc.get(f'/item/{image_id}')
     print(f'Working on: {image_info["name"]}')
 
+    # Checking if DeepCell API is provided
+    if args.deepCellApi:
+        os.environ['DEEPCELL_ACCESS_TOKEN'] = args.deepCellApi
+
     # Copying it over to the plugin filesystem
-    """
-    _ = gc.downloadFile(
-            fileId = args.input_image,
-            path = f'/{image_info["name"]}',
-        )
-    print(f'Image copied successfully! {image_info["name"] in os.listdir("/")}')
-    """
     image_tiles_info = gc.get(f'/item/{image_id}/tiles')
     print(f'Image has {len(image_tiles_info["frames"])} Channels!')
     print(f'Image is {image_tiles_info["sizeY"]} x {image_tiles_info["sizeX"]}')
 
-    # Creating patch iterator 
-    """
-    patch_maker = Patches(
-        image_id = image_id,
-        patch_size = args.patch_size,
-        region = args.input_region,
-        gc = gc
-    )
+    # Testing if nuclei frame is provided as comma separated list
+    if ',' in args.nuclei_frame:
+        args.nuclei_frame = [int(float(i)) for i in args.nuclei_frame.split(',')]
+    else:
+        args.nuclei_frame = int(float(args.nuclei_frame))
 
-    patch_maker = iter(patch_maker)
-    """
+    # Creating patch iterator 
     # Initializing deepcell object
     cell_finder = DeepCellHandler(
         gc,
         image_id,
-        args.girderToken,
-        args.minsize_nuclei
+        args.girderToken
     )
-
-    # Initializing empty annotations object
-    """
-    all_nuc_annotations = [{
-        'annotation': {
-            'name': 'CODEX Nuclei',
-            'attributes': {},
-            'elements': []
-        }
-    }]
-    """
 
     patch_annotations = wak.AnnotationPatches()
     patch_annotations.define_patches(
         region_crs = args.input_region[0:2],
         height = args.input_region[3],
-        widht = args.input_region[2],
+        width = args.input_region[2],
         patch_height = args.patch_size,
         patch_width = args.patch_size,
-        overlap_pct = 0 
+        overlap_pct = 0.1 
     )
 
     patch_annotations = iter(patch_annotations)
@@ -291,7 +195,7 @@ def main(args):
         try:
             # Getting the next patch region
             new_patch = next(patch_annotations)
-            print(f'On patch: {patch_annotations.patch_idx+1} of {len(patch_annotations.patch_list)}')
+            print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
             next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
             # Getting features and annotations within that region
             region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
@@ -299,16 +203,19 @@ def main(args):
             patch_annotations.add_patch_mask(
                 mask = region_annotations,
                 patch_obj = new_patch,
-                mask_type = 'binary',
-                structure = 'CODEX Nuclei'
+                mask_type = 'one-hot-labeled',
+                structure = ['CODEX Nuclei']
             )
 
         except StopIteration:
             more_patches = False
-
+    
+    print('--------------------------------------------------')
     print('Cleaning up annotations')
     patch_annotations.clean_patches()
+    print('Annotation patches cleaned up!')
 
+    print('Posting annotations')
     all_nuc_annotations = wak.Histomics(patch_annotations).json
     # Posting annotations to item
     gc.post(f'/annotation/item/{image_id}?token={args.girderToken}',

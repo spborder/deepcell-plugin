@@ -52,7 +52,7 @@ setup(
         'girder-slicer-cli-web',
         'girder-client',
         'ctk-cli',
-        'wsi-annotations-kit==1.4.1',
+        'wsi-annotations-kit==1.4.4',
         'deepcell'
     ],
     license='Apache Software License 2.0',
