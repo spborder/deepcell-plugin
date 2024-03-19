@@ -46,11 +46,14 @@ setup(
     include_package_data=True,
     install_requires=[
         'Pillow',
+        'scikit-image>=0.19.3',
+        'scikit-learn>=0.20.4',
         'girder-slicer-cli-web',
         'girder-client',
         'ctk-cli',
-        'wsi-annotations-kit==1.4.4',
-        'deepcell'
+        'wsi-annotations-kit==1.4.5',
+        'deepcell-toolbox>=0.12.1',
+        'deepcell==0.12.9'
     ],
     license='Apache Software License 2.0',
     keywords='DeepCell_Plugin',
