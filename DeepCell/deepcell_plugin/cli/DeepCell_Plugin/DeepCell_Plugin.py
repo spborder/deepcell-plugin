@@ -28,7 +28,7 @@ from ctk_cli import CLIArgumentParser
 
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
-from deepcell.utils import extract_archive
+#from deepcell.utils._auth import extract_archive
 from skimage.morphology import remove_small_objects
 from scipy import ndimage as ndi
 
@@ -42,20 +42,58 @@ from pathlib import Path
 import tensorflow as tf
 
 import girder_client
+import logging
+import tarfile
+import zipfile
+
+def extract_archive(file_path, path="."):
+    """Extracts an archive if it matches tar, tar.gz, tar.bz, or zip formats.
+
+    Args:
+        file_path: Path to the archive file.
+        path: Where to extract the archive file.
+
+    Returns:
+        True if a match was found and an archive extraction was completed,
+        False otherwise.
+    """
+    logging.basicConfig(level=logging.INFO)
+
+    file_path = os.fspath(file_path) if isinstance(file_path, os.PathLike) else file_path
+    path = os.fspath(path) if isinstance(path, os.PathLike) else path
+
+    logging.info(f'Extracting {file_path}')
+
+    status = False
+
+    if tarfile.is_tarfile(file_path):
+        with tarfile.open(file_path) as archive:
+            archive.extractall(path)
+        status = True
+    elif zipfile.is_zipfile(file_path):
+        with zipfile.ZipFile(file_path) as archive:
+            archive.extractall(path)
+        status = True
+
+    if status:
+        logging.info(f'Successfully extracted {file_path} into {path}')
+    else:
+        logging.info(f'Failed to extract {file_path} into {path}')
+
 
 class DeepCellHandler:
-    def __init__(self, gc, image_id: str, user_token: str, min_size:int):
+    def __init__(self, gc, image_id: str, user_token: str):
 
         # Loading model (list contains EC2 model id and athena model id)
         self.nuclear_segmentation_model_id = ["65e0c399adb89a58fea1152b","65f857bfd2f45e99a914a26c"]
         # Attempting to download the model:
         self.model = None
+        self.model_path = Path.home() / ".deepcell/models"
+        if not os.path.exists(self.model_path):
+            os.makedirs(self.model_path)
+
         for n in self.nuclear_segmentation_model_id:
             try:
-                self.model_path = Path.home() / ".deepcell/models"
-                if not os.path.exists(self.model_path):
-                    os.makedirs(self.model_path)
-
                 _ = gc.downloadItem(
                     itemId = self.nuclear_segmentation_model_id,
                     dest = self.model_path,
@@ -73,6 +111,7 @@ class DeepCellHandler:
 
                 print('Using server-hosted model version')
             except girder_client.HttpError:
+                print(f'File not found at: {n}')
                 continue
         
         if self.model is None:
@@ -85,7 +124,6 @@ class DeepCellHandler:
         self.gc = gc
         self.image_id = image_id
         self.user_token = user_token
-        self.min_size = min_size
 
     def predict(self,region_coords:list, frame_index:int):
 
@@ -122,7 +160,7 @@ class DeepCellHandler:
                 
                 # Return mean of intersecting channels
                 image_region /= len(frame_index)
-
+                image_region = np.uint8(image_region)
             else:
                 image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
             

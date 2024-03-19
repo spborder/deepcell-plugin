@@ -45,10 +45,7 @@ setup(
     },
     include_package_data=True,
     install_requires=[
-        'numpy',
-        'scipy',
         'Pillow',
-        'scikit-image',
         'girder-slicer-cli-web',
         'girder-client',
         'ctk-cli',
