@@ -95,7 +95,7 @@ class DeepCellHandler:
         for n in self.nuclear_segmentation_model_id:
             try:
                 _ = gc.downloadItem(
-                    itemId = self.nuclear_segmentation_model_id,
+                    itemId = n,
                     dest = self.model_path,
                     name = 'NuclearSegmentation-75.tar.gz'
                 )
@@ -131,9 +131,7 @@ class DeepCellHandler:
         # Step 1: Expanding image dimensions to expected rank (4)
         image = self.get_image_region(region_coords,frame_index)
         if not image is None:        
-            print(f'image_shape: {np.shape(image)}')
             image = image[None,:,:,None]
-            print(f'image shape: {np.shape(image)}')
 
             # Step 2: Generate labeled image
             labeled_image = self.model.predict(image)
