@@ -329,7 +329,7 @@ def main(args):
 
     if args.get_features:
         # Extracting channel-level statistics and adding as user metadata
-        n_nuclei = len(all_nuc_annotations["annotation"]["elements"])
+        n_nuclei = len(all_nuc_annotations[0]["annotation"]["elements"])
         print(f'{n_nuclei} nuclei found!')
         print('Calculating features now!')
 
@@ -339,8 +339,8 @@ def main(args):
             user_token = args.girderToken
         )
 
-        with tqdm(all_nuc_annotations["annotation"]["elements"],total = n_nuclei) as pbar:
-            for el_idx, el in all_nuc_annotations["annotation"]["elements"]:
+        with tqdm(all_nuc_annotations[0]["annotation"]["elements"],total = n_nuclei) as pbar:
+            for el_idx, el in all_nuc_annotations[0]["annotation"]["elements"]:
                 
                 pbar.set_description(f'Working on nucleus: {el_idx}/{n_nuclei}')
                 pbar.update(1)
