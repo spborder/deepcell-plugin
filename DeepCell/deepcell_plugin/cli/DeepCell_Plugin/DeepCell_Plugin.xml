@@ -34,6 +34,14 @@
       <channel>input</channel>
       <index>2</index>
     </string>
+    <boolean>
+      <name>get_features</name>
+      <label>Get Features?</label>
+      <description>Calculate channel-level statistics for each nucleus</description>
+      <default>0</default>
+      <channel>input</channel>
+      <index>3</index>
+    </boolean>
   </parameters>
   <parameters advanced="true">
     <label>Girder API URL and Key</label>

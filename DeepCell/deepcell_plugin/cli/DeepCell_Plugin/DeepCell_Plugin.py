@@ -37,6 +37,8 @@ from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
 import wsi_annotations_kit.wsi_annotations_kit as wak
+from shapely.geometry import Polygon
+from skimage.draw import polygon
 
 from pathlib import Path
 import tensorflow as tf
@@ -45,6 +47,7 @@ import girder_client
 import logging
 import tarfile
 import zipfile
+from tqdm import tqdm
 
 def extract_archive(file_path, path="."):
     """Extracts an archive if it matches tar, tar.gz, tar.bz, or zip formats.
@@ -175,6 +178,75 @@ class DeepCellHandler:
             return None
 
 
+class FeatureExtractor:
+    def __init__(self, n_frames, gc, user_token):
+        
+        self.n_frames = n_frames
+        self.gc = gc
+        self.user_token = user_token
+        self.cyto_pixels = 5
+
+    def get_image_region(self,coords_list:list):
+        
+        try:
+            image_region = np.zeros((int(coords_list[3]-coords_list[1]),int(coords_list[2]-coords_list[0]),int(self.n_frames)))
+            for f in range(self.n_frames):
+                image_region[:,:,f] += np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={f}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+            
+            image_region = np.uint8(image_region)
+
+            return image_region
+        except UnidentifiedImageError:
+            print('Error found :(')
+
+            return None
+    
+    def make_mask(self,nuc_poly):
+        """
+        Making a mask for the current polygon
+        """
+
+        poly_bbox = list(nuc_poly.bounds)
+        poly_mask = np.zeros((int(poly_bbox[3]-poly_bbox[1]),int(poly_bbox[2]-poly_bbox[0])))
+
+        poly_exterior = list(nuc_poly.exterior.coords)
+        # x = cols, y = rows
+        x_coords = [i[0] for i in poly_exterior]
+        y_coords = [i[1] for i in poly_exterior]
+
+        rows, cols = polygon(r = y_coords, c = x_coords, shape = (np.shape(poly_mask)[0],np.shape(poly_mask)[1]))
+        poly_mask[rows,cols] = 1
+
+        return poly_mask      
+
+    def get_features(self, coords_list:list):
+        """
+        Finding features for masked image region
+        """
+        nuc_poly = Polygon(coords_list).buffer(self.cyto_pixels)
+        nuc_bbox = list(nuc_poly.bounds)
+
+        nuc_mask = self.make_mask(nuc_poly)
+        # multi-frame image array
+        nuc_image = self.get_image_region(nuc_bbox)
+
+        masked_image_pixels = nuc_image[nuc_mask>0,:]
+        print(np.shape(masked_image_pixels))
+        mean_vals = np.nanmean(masked_image_pixels,axis=0)
+        print(np.shape(mean_vals))
+
+        std_vals = np.nanstd(masked_image_pixels,axis = 0)
+        print(np.shape(std_vals))
+
+        feature_dict = {
+            'Channel Means': [float(i) for i in mean_vals.tolist()],
+            'Channel Stds': [float(i) for i in std_vals.tolist()]
+        }
+
+        return feature_dict
+
+        
+    
 
 def main(args):
 
@@ -253,8 +325,36 @@ def main(args):
     patch_annotations.clean_patches()
     print('Annotation patches cleaned up!')
 
-    print('Posting annotations')
     all_nuc_annotations = wak.Histomics(patch_annotations).json
+
+    if args.get_features:
+        # Extracting channel-level statistics and adding as user metadata
+        n_nuclei = len(all_nuc_annotations["annotation"]["elements"])
+        print(f'{n_nuclei} nuclei found!')
+        print('Calculating features now!')
+
+        feature_extractor = FeatureExtractor(
+            n_frames = len(image_tiles_info["frames"]),
+            gc = gc,
+            user_token = args.girderToken
+        )
+
+        with tqdm(all_nuc_annotations["annotation"]["elements"],total = n_nuclei) as pbar:
+            for el_idx, el in all_nuc_annotations["annotation"]["elements"]:
+                
+                pbar.set_description(f'Working on nucleus: {el_idx}/{n_nuclei}')
+                pbar.update(1)
+
+                # X, Y, Z vertices
+                nuc_coords = np.array(el['points']).tolist()
+                nuc_coords = [(i[0],i[1]) for i in nuc_coords]
+
+                nuc_features = feature_extractor.get_features(nuc_coords)
+                
+                el['user'] = nuc_features
+
+
+    print('Posting annotations')
     # Posting annotations to item
     gc.post(f'/annotation/item/{image_id}?token={args.girderToken}',
             data = json.dumps(all_nuc_annotations),
