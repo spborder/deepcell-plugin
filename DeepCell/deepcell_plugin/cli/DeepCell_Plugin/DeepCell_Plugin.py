@@ -340,7 +340,7 @@ def main(args):
         )
 
         with tqdm(all_nuc_annotations[0]["annotation"]["elements"],total = n_nuclei) as pbar:
-            for el_idx, el in all_nuc_annotations[0]["annotation"]["elements"]:
+            for el_idx, el in enumerate(all_nuc_annotations[0]["annotation"]["elements"]):
                 
                 pbar.set_description(f'Working on nucleus: {el_idx}/{n_nuclei}')
                 pbar.update(1)
