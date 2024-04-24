@@ -179,17 +179,20 @@ class DeepCellHandler:
 
 
 class FeatureExtractor:
-    def __init__(self, n_frames, gc, user_token):
+    def __init__(self, n_frames, image_id, gc, user_token):
         
         self.n_frames = n_frames
+        self.image_id = image_id
         self.gc = gc
         self.user_token = user_token
         self.cyto_pixels = 5
 
     def get_image_region(self,coords_list:list):
         
+        print(coords_list)
+        coords_list = [round(i) for i in coords_list]
         try:
-            image_region = np.zeros((int(coords_list[3]-coords_list[1]),int(coords_list[2]-coords_list[0]),int(self.n_frames)))
+            image_region = np.zeros((round(coords_list[3]-coords_list[1]),round(coords_list[2]-coords_list[0]),int(self.n_frames)))
             for f in range(self.n_frames):
                 image_region[:,:,f] += np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={f}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
             
@@ -205,14 +208,13 @@ class FeatureExtractor:
         """
         Making a mask for the current polygon
         """
-
-        poly_bbox = list(nuc_poly.bounds)
+        poly_bbox = [round(i) for i in list(nuc_poly.bounds)]
         poly_mask = np.zeros((int(poly_bbox[3]-poly_bbox[1]),int(poly_bbox[2]-poly_bbox[0])))
 
         poly_exterior = list(nuc_poly.exterior.coords)
         # x = cols, y = rows
-        x_coords = [i[0] for i in poly_exterior]
-        y_coords = [i[1] for i in poly_exterior]
+        x_coords = [int(i[0]-poly_bbox[0]) for i in poly_exterior]
+        y_coords = [int(i[1]-poly_bbox[1]) for i in poly_exterior]
 
         rows, cols = polygon(r = y_coords, c = x_coords, shape = (np.shape(poly_mask)[0],np.shape(poly_mask)[1]))
         poly_mask[rows,cols] = 1
@@ -231,16 +233,13 @@ class FeatureExtractor:
         nuc_image = self.get_image_region(nuc_bbox)
 
         masked_image_pixels = nuc_image[nuc_mask>0,:]
-        print(np.shape(masked_image_pixels))
         mean_vals = np.nanmean(masked_image_pixels,axis=0)
-        print(np.shape(mean_vals))
 
         std_vals = np.nanstd(masked_image_pixels,axis = 0)
-        print(np.shape(std_vals))
 
         feature_dict = {
-            'Channel Means': [float(i) for i in mean_vals.tolist()],
-            'Channel Stds': [float(i) for i in std_vals.tolist()]
+            'Channel Means': [float(i) if not np.isnan(i) else 0 for i in mean_vals.tolist()],
+            'Channel Stds': [float(i) if not np.isnan(i) else 0 for i in std_vals.tolist()]
         }
 
         return feature_dict
@@ -335,6 +334,7 @@ def main(args):
 
         feature_extractor = FeatureExtractor(
             n_frames = len(image_tiles_info["frames"]),
+            image_id=image_id,
             gc = gc,
             user_token = args.girderToken
         )
