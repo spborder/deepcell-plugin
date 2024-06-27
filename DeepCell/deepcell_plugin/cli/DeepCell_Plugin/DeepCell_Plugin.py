@@ -29,7 +29,9 @@ from ctk_cli import CLIArgumentParser
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
 #from deepcell.utils._auth import extract_archive
-from skimage.morphology import remove_small_objects
+from skimage.morphology import remove_small_objects, remove_small_holes
+from skimage.filters import threshold_otsu
+from skimage.measure import find_contours
 from scipy import ndimage as ndi
 
 import requests
@@ -38,7 +40,10 @@ from io import BytesIO
 
 import wsi_annotations_kit.wsi_annotations_kit as wak
 from shapely.geometry import Polygon
+from shapely.validation import make_valid
+from shapely.ops import unary_union
 from skimage.draw import polygon
+
 
 from pathlib import Path
 import tensorflow as tf
@@ -189,7 +194,6 @@ class FeatureExtractor:
 
     def get_image_region(self,coords_list:list):
         
-        print(coords_list)
         coords_list = [round(i) for i in coords_list]
         try:
             image_region = np.zeros((round(coords_list[3]-coords_list[1]),round(coords_list[2]-coords_list[0]),int(self.n_frames)))
@@ -245,7 +249,86 @@ class FeatureExtractor:
         return feature_dict
 
         
+def get_tissue_mask(gc,token,image_item_id):
+    """
+    Extract tissue mask and use to filter out false positive cell segmentations outside of the main tissue
+    """
+    image_metadata = gc.get(f'/item/{image_item_id}/tiles')
+
+    thumb_frame_list = []
+    for f in range(len(image_metadata['frames'])):
+        thumb = np.array(
+            Image.open(
+                BytesIO(
+                    requests.get(
+                        f'{gc.urlBase}/item/tiles/thumbnail?frame={f}&token={token}'
+                    ).content
+                )
+            )
+        )
+        thumb_frame_list.append(np.max(thumb,axis=-1)[:,:,None])
     
+    thumb_array = np.concatenate(tuple(thumb_frame_list),axis=-1)
+
+    thumbX, thumbY = np.shape(thumb_array)[1], np.shape(thumb_array)[0]
+    scale_x = image_metadata['sizeX']/thumbX
+    scale_y = image_metadata['sizeY']/thumbY
+
+    # Mean of all channels/frames to make grayscale mask
+    gray_mask = np.squeeze(np.mean(thumb_array,axis=-1))
+
+    threshold_val = threshold_otsu(gray_mask)
+    tissue_mask = gray_mask <= threshold_val
+
+    tissue_mask = remove_small_holes(tissue_mask,area_threshold=150)
+
+    labeled_mask = ndi.label(tissue_mask)
+    tissue_pieces = np.unique(labeled_mask).tolist()
+
+    tissue_shape_list = []
+    for piece in tissue_pieces[1:]:
+        tissue_contours = find_contours(labeled_mask==piece)
+
+        for contour in tissue_contours:
+
+            poly_list = [(i[1]*scale_x,i[0]*scale_y) for i in contour]
+            if len(poly_list)>2:
+                obj_polygon = Polygon(poly_list)
+
+                if not obj_polygon.is_valid:
+                    made_valid = make_valid(obj_polygon)
+
+                    if made_valid.geom_type == 'Polygon':
+                        tissue_shape_list.append(made_valid)
+                    elif made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                        for g in made_valid.geoms:
+                            if g.geom_type=='Polygon':
+                                tissue_shape_list.append(g)
+                
+                else:
+                    tissue_shape_list.append(obj_polygon)
+
+    # Merging shapes together to remove holes
+    merged_tissue = unary_union(tissue_shape_list)
+    if merged_tissue.geom_type == 'Polygon':
+        merged_tissue = [merged_tissue]
+    elif merged_tissue.geom_type in ['MultiPolygon','GeometryCollection']:
+        merged_tissue = merged_tissue.geoms
+
+    # Creating mask from the exterior coordinates
+    wsi_tissue_mask = np.zeros((image_metadata['sizeY'],image_metadata['sizeX']))
+    for t in merged_tissue:
+
+        poly_exterior = list(t.exterior.coords)
+        # x = cols, y = rows
+        x_coords = [int(i[0]) for i in poly_exterior]
+        y_coords = [int(i[1]) for i in poly_exterior]
+
+        rows, cols = polygon(r = y_coords, c = x_coords, shape = (image_metadata['sizeY'],image_metadata['sizeX']))
+        wsi_tissue_mask[rows,cols] = 1
+
+    return wsi_tissue_mask
+
 
 def main(args):
 
@@ -299,6 +382,9 @@ def main(args):
 
     patch_annotations = iter(patch_annotations)
 
+    # Get tissue mask for the whole slide and use that to mask predictions at the end
+    tissue_mask = get_tissue_mask(gc,args.girderToken,image_id)
+
     more_patches = True
     while more_patches:
         try:
@@ -308,6 +394,10 @@ def main(args):
             next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
             # Getting features and annotations within that region
             region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
+
+            # Getting the same region from the tissue mask
+            region_filter = tissue_mask[int(new_patch.top):int(new_patch.bottom),int(new_patch.left):int(new_patch.right)]
+            region_annotations = np.bitwise_and(region_annotations,region_filter)
 
             patch_annotations.add_patch_mask(
                 mask = region_annotations,
