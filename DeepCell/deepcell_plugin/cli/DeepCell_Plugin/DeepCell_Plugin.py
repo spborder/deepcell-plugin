@@ -450,6 +450,9 @@ def main(args):
         args.girderToken
     )
 
+    if args.input_region == [-1,-1,-1,-1]:
+        args.input_region = [0,0,image_tiles_info['sizeX'],image_tiles_info['sizeY']]
+
     patch_annotations = wak.AnnotationPatches()
     patch_annotations.define_patches(
         region_crs = args.input_region[0:2],
@@ -472,19 +475,22 @@ def main(args):
             new_patch = next(patch_annotations)
             print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
             next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
-            # Getting features and annotations within that region
-            region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
 
-            # Getting the same region from the tissue mask
             region_filter = tissue_mask[int(new_patch.top):int(new_patch.bottom),int(new_patch.left):int(new_patch.right)]
-            region_annotations = np.bitwise_and(region_annotations,region_filter)
+            if np.sum(region_filter)>0:
+                # Getting features and annotations within that region
+                region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
 
-            patch_annotations.add_patch_mask(
-                mask = region_annotations,
-                patch_obj = new_patch,
-                mask_type = 'one-hot-labeled',
-                structure = ['CODEX Nuclei']
-            )
+                # Getting the same region from the tissue mask
+                region_annotations = region_annotations * region_filter
+                region_annotations = label(region_annotations)
+
+                patch_annotations.add_patch_mask(
+                    mask = region_annotations,
+                    patch_obj = new_patch,
+                    mask_type = 'one-hot-labeled',
+                    structure = ['CODEX Nuclei']
+                )
 
         except StopIteration:
             more_patches = False
