@@ -338,7 +338,7 @@ def get_tissue_mask(gc,token,image_item_id):
             Image.open(
                 BytesIO(
                     requests.get(
-                        f'{gc.urlBase}/item/tiles/thumbnail?frame={f}&token={token}'
+                        f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?frame={f}&token={token}'
                     ).content
                 )
             )
