@@ -31,7 +31,7 @@ from deepcell.applications import NuclearSegmentation
 #from deepcell.utils._auth import extract_archive
 from skimage.morphology import remove_small_objects, remove_small_holes
 from skimage.filters import threshold_otsu
-from skimage.measure import find_contours
+from skimage.measure import find_contours, label
 from skimage.segmentation import watershed
 from skimage.feature import peak_local_max
 from scipy import ndimage as ndi
@@ -343,10 +343,11 @@ def get_tissue_mask(gc,token,image_item_id):
                 )
             )
         )
+        print(f'shape of thumbnail{np.shape(thumb)}')
         thumb_frame_list.append(np.max(thumb,axis=-1)[:,:,None])
     
     thumb_array = np.concatenate(tuple(thumb_frame_list),axis=-1)
-
+    print(f'shape of thumb array{np.shape(thumb_array)}')
     thumbX, thumbY = np.shape(thumb_array)[1], np.shape(thumb_array)[0]
     scale_x = image_metadata['sizeX']/thumbX
     scale_y = image_metadata['sizeY']/thumbY
@@ -359,7 +360,9 @@ def get_tissue_mask(gc,token,image_item_id):
 
     tissue_mask = remove_small_holes(tissue_mask,area_threshold=150)
 
-    labeled_mask = ndi.label(tissue_mask)
+    print(f'shape of tissue mask {np.shape(tissue_mask)}')
+    print(f'sum of tissue_mask: {np.sum(tissue_mask)}')
+    labeled_mask = label(tissue_mask)
     tissue_pieces = np.unique(labeled_mask).tolist()
 
     tissue_shape_list = []
