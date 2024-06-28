@@ -32,6 +32,8 @@ from deepcell.applications import NuclearSegmentation
 from skimage.morphology import remove_small_objects, remove_small_holes
 from skimage.filters import threshold_otsu
 from skimage.measure import find_contours
+from skimage.segmentation import watershed
+from skimage.feature import peak_local_max
 from scipy import ndimage as ndi
 
 import requests
@@ -192,6 +194,8 @@ class FeatureExtractor:
         self.user_token = user_token
         self.cyto_pixels = 5
 
+        self.annotations = wak.Annotation()
+
     def get_image_region(self,coords_list:list):
         
         coords_list = [round(i) for i in coords_list]
@@ -225,6 +229,26 @@ class FeatureExtractor:
 
         return poly_mask      
 
+    def post_process_mask(self, nuc_mask):
+        """
+        Post-process individual nucleus mask
+        """
+
+        # Watershed implementation from: https://scikit-image.org/docs/stable/auto_examples/segmentation/plot_watershed.html
+        distance = ndi.distance_transform_edt(nuc_mask)
+        labeled_mask, _ = ndi.label(nuc_mask)
+        coords = peak_local_max(distance,footprint=np.ones((3,3)),labels = labeled_mask)
+        watershed_mask = np.zeros(distance.shape,dtype=bool)
+        watershed_mask[tuple(coords.T)] = True
+        markers, _ = ndi.label(watershed_mask)
+        sub_mask = watershed(-distance,markers,mask=nuc_mask)
+        sub_mask = sub_mask>0
+
+        # Filtering out small objects again
+        sub_mask = remove_small_objects(sub_mask,25)
+
+        return sub_mask
+
     def get_features(self, coords_list:list):
         """
         Finding features for masked image region
@@ -233,20 +257,73 @@ class FeatureExtractor:
         nuc_bbox = list(nuc_poly.bounds)
 
         nuc_mask = self.make_mask(nuc_poly)
+        nuc_mask = self.post_process_mask(nuc_mask)
+
         # multi-frame image array
         nuc_image = self.get_image_region(nuc_bbox)
 
-        masked_image_pixels = nuc_image[nuc_mask>0,:]
-        mean_vals = np.nanmean(masked_image_pixels,axis=0)
+        labeled_nuc_mask = ndi.label(nuc_mask)
+        for i in np.unique(labeled_nuc_mask).tolist()[1:]:
+            masked_image_pixels = nuc_image[labeled_nuc_mask==i]
+            mean_vals = np.nanmean(masked_image_pixels,axis=0)
 
-        std_vals = np.nanstd(masked_image_pixels,axis = 0)
+            std_vals = np.nanstd(masked_image_pixels,axis = 0)
 
-        feature_dict = {
-            'Channel Means': [float(i) if not np.isnan(i) else 0 for i in mean_vals.tolist()],
-            'Channel Stds': [float(i) if not np.isnan(i) else 0 for i in std_vals.tolist()]
-        }
+            feature_dict = {
+                'Channel Means': [float(i) if not np.isnan(i) else 0 for i in mean_vals.tolist()],
+                'Channel Stds': [float(i) if not np.isnan(i) else 0 for i in std_vals.tolist()]
+            }
 
-        return feature_dict
+            obj_contours = find_contours(labeled_nuc_mask,i)
+            if len(obj_contours)>1:
+                polygon_list = []
+                for obj_contour in obj_contours:
+                    # This is in (rows,columns) format
+                    poly_list = [(int(i[1]),int(i[0])) for i in obj_contour]
+                    # Making polygon from contours
+                    obj_poly = Polygon(poly_list)
+                    if not obj_poly.is_valid:
+                        made_valid = make_valid(obj_poly)
+                        if made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                            for obj in made_valid.geoms:
+                                polygon_list.append(obj)
+                        elif made_valid.geom_type == 'Polygon':
+                            polygon_list.append(made_valid)
+                    else:
+                        polygon_list.append(obj_poly)
+                
+                # Adding largest area polygon:
+                nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
+                bbox = list(nuc_poly.bounds)
+
+            elif len(obj_contours)==1:
+                
+                poly_list = [(int(i[1]),int(i[0])) for i in obj_contours[0]]
+                obj_poly = Polygon(poly_list)
+                if not obj_poly.is_valid:
+                    polygon_list = []
+                    made_valid = make_valid(obj_poly)
+                    if made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                        for obj in made_valid.geoms:
+                            polygon_list.append(obj)
+                    elif made_valid.geom_type == 'Polygon':
+                        polygon_list.append(made_valid)
+                    
+                    nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
+                else:
+                    nuc_poly = obj_poly
+
+                bbox = list(nuc_poly.bounds)
+
+            elif len(obj_contours)==0:
+                continue
+
+            self.annotations.add_shape(
+                mask = masked_image_pixels,
+                box_crs = [bbox[0],bbox[1]],
+                structure = 'CODEX Nuclei',
+                properties = feature_dict
+            )
 
         
 def get_tissue_mask(gc,token,image_item_id):
@@ -439,10 +516,9 @@ def main(args):
                 nuc_coords = np.array(el['points']).tolist()
                 nuc_coords = [(i[0],i[1]) for i in nuc_coords]
 
-                nuc_features = feature_extractor.get_features(nuc_coords)
+                feature_extractor.get_features(nuc_coords)
                 
-                el['user'] = nuc_features
-
+        all_nuc_annotations = wak.Histomics(feature_extractor.annotations).json
 
     print('Posting annotations')
     # Posting annotations to item
