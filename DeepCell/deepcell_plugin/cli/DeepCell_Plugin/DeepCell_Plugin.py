@@ -257,12 +257,14 @@ class FeatureExtractor:
         nuc_bbox = list(nuc_poly.bounds)
 
         nuc_mask = self.make_mask(nuc_poly)
-        nuc_mask = self.post_process_mask(nuc_mask)
+        nuc_mask = np.squeeze(self.post_process_mask(nuc_mask))
+        print(np.shape(nuc_mask))
 
         # multi-frame image array
         nuc_image = self.get_image_region(nuc_bbox)
+        print(np.shape(nuc_image))
 
-        labeled_nuc_mask = ndi.label(nuc_mask)
+        labeled_nuc_mask = label(nuc_mask)
         for i in np.unique(labeled_nuc_mask).tolist()[1:]:
             masked_image_pixels = nuc_image[labeled_nuc_mask==i]
             mean_vals = np.nanmean(masked_image_pixels,axis=0)
@@ -482,8 +484,8 @@ def main(args):
                 region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
 
                 # Getting the same region from the tissue mask
-                region_annotations = region_annotations * region_filter
-                region_annotations = label(region_annotations)
+                region_annotations = region_annotations[:,:,0] * region_filter
+                region_annotations = label(region_annotations)[:,:,None]
 
                 patch_annotations.add_patch_mask(
                     mask = region_annotations,
