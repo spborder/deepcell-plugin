@@ -29,7 +29,7 @@ from ctk_cli import CLIArgumentParser
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
 #from deepcell.utils._auth import extract_archive
-from skimage.morphology import remove_small_objects, remove_small_holes
+from skimage.morphology import remove_small_objects, remove_small_holes, binary_erosion
 from skimage.filters import threshold_otsu
 from skimage.measure import find_contours, label
 from skimage.segmentation import watershed
@@ -41,7 +41,7 @@ from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
 import wsi_annotations_kit.wsi_annotations_kit as wak
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, box
 from shapely.validation import make_valid
 from shapely.ops import unary_union
 from skimage.draw import polygon
@@ -194,6 +194,9 @@ class FeatureExtractor:
         self.user_token = user_token
         self.cyto_pixels = 5
 
+        image_meta = self.gc.get(f'/item/{self.image_id}/tiles')
+        self.image_bbox = box(0,0,image_meta['sizeX'],image_meta['sizeY'])
+
         self.annotations = wak.Annotation()
 
     def get_image_region(self,coords_list:list):
@@ -237,15 +240,15 @@ class FeatureExtractor:
         # Watershed implementation from: https://scikit-image.org/docs/stable/auto_examples/segmentation/plot_watershed.html
         distance = ndi.distance_transform_edt(nuc_mask)
         labeled_mask, _ = ndi.label(nuc_mask)
-        coords = peak_local_max(distance,footprint=np.ones((3,3)),labels = labeled_mask)
+        coords = peak_local_max(distance,footprint=np.ones((50,50)),labels = labeled_mask)
         watershed_mask = np.zeros(distance.shape,dtype=bool)
         watershed_mask[tuple(coords.T)] = True
         markers, _ = ndi.label(watershed_mask)
         sub_mask = watershed(-distance,markers,mask=nuc_mask)
-        sub_mask = sub_mask>0
+        #sub_mask = sub_mask>0
 
         # Filtering out small objects again
-        sub_mask = remove_small_objects(sub_mask,25)
+        sub_mask = remove_small_objects(sub_mask,10) if sub_mask.max()>1 else sub_mask
 
         return sub_mask
 
@@ -253,22 +256,23 @@ class FeatureExtractor:
         """
         Finding features for masked image region
         """
-        nuc_poly = Polygon(coords_list).buffer(self.cyto_pixels)
+        nuc_poly = Polygon(coords_list).buffer(self.cyto_pixels+1)
+        nuc_poly = nuc_poly.intersection(self.image_bbox)
         nuc_bbox = list(nuc_poly.bounds)
 
         nuc_mask = self.make_mask(nuc_poly)
+        nuc_mask = np.pad(nuc_mask,pad_width=1)
         nuc_mask = np.squeeze(self.post_process_mask(nuc_mask))
-        print(np.shape(nuc_mask))
 
         # multi-frame image array
         nuc_image = self.get_image_region(nuc_bbox)
-        print(np.shape(nuc_image))
+        nuc_image = np.pad(nuc_image,pad_width=1)
 
         labeled_nuc_mask = label(nuc_mask)
         for i in np.unique(labeled_nuc_mask).tolist()[1:]:
             masked_image_pixels = nuc_image[labeled_nuc_mask==i]
-            mean_vals = np.nanmean(masked_image_pixels,axis=0)
 
+            mean_vals = np.nanmean(masked_image_pixels,axis=0)
             std_vals = np.nanstd(masked_image_pixels,axis = 0)
 
             feature_dict = {
@@ -276,56 +280,83 @@ class FeatureExtractor:
                 'Channel Stds': [float(i) if not np.isnan(i) else 0 for i in std_vals.tolist()]
             }
 
-            obj_contours = find_contours(labeled_nuc_mask,i)
+            obj_contours = find_contours(labeled_nuc_mask==i)
             if len(obj_contours)>1:
                 polygon_list = []
                 for obj_contour in obj_contours:
                     # This is in (rows,columns) format
-                    poly_list = [(int(i[1]),int(i[0])) for i in obj_contour]
+                    poly_list = [(int(i[1]),int(i[0])) for i in obj_contour if len(obj_contour)>3]
+                    if not len(poly_list)>0:
+                        continue
                     # Making polygon from contours
                     obj_poly = Polygon(poly_list)
                     if not obj_poly.is_valid:
                         made_valid = make_valid(obj_poly)
                         if made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                            made_valid = unary_union(made_valid.geoms)
                             for obj in made_valid.geoms:
-                                polygon_list.append(obj)
-                        elif made_valid.geom_type == 'Polygon':
+                                if obj.geom_type=='Polygon' and obj.is_valid:
+                                    polygon_list.append(obj)
+                        elif made_valid.geom_type == 'Polygon' and made_valid.is_valid:
                             polygon_list.append(made_valid)
+
                     else:
-                        polygon_list.append(obj_poly)
+                        if obj.geom_type=='Polygon':
+                            polygon_list.append(obj_poly)
                 
-                # Adding largest area polygon:
-                nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
-                bbox = list(nuc_poly.bounds)
+                if len(polygon_list)>0:
+                    # Adding largest area polygon:
+                    nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
+                    bbox = list(nuc_poly.bounds)
+                else:
+                    nuc_poly = None
+                    bbox = None
 
             elif len(obj_contours)==1:
                 
-                poly_list = [(int(i[1]),int(i[0])) for i in obj_contours[0]]
+                poly_list = [(int(i[1]),int(i[0])) for i in obj_contours[0] if len(obj_contours[0])>3]
+                if not len(poly_list)>0:
+                    continue
+
                 obj_poly = Polygon(poly_list)
                 if not obj_poly.is_valid:
                     polygon_list = []
                     made_valid = make_valid(obj_poly)
                     if made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                        made_valid = unary_union(made_valid.geoms)
                         for obj in made_valid.geoms:
-                            polygon_list.append(obj)
-                    elif made_valid.geom_type == 'Polygon':
+                            if obj.geom_type == 'Polygon' and obj.is_valid:
+                                polygon_list.append(obj)
+                    elif made_valid.geom_type == 'Polygon' and made_valid.is_valid:
                         polygon_list.append(made_valid)
                     
-                    nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
-                else:
-                    nuc_poly = obj_poly
+                    if len(polygon_list)>0:
+                        nuc_poly = polygon_list[np.argmax([i.area for i in polygon_list])]
+                        bbox = list(nuc_poly.bounds)
 
-                bbox = list(nuc_poly.bounds)
+                    else:
+                        nuc_poly = None
+                        bbox = None
+                else:
+                    if obj_poly.geom_type=='Polygon':
+                        nuc_poly = obj_poly
+                        bbox = list(nuc_poly.bounds)
+
+                    else:
+                        nuc_poly = None
+                        bbox = None
 
             elif len(obj_contours)==0:
-                continue
+                nuc_poly = None
+                bbox = None
 
-            self.annotations.add_shape(
-                mask = masked_image_pixels,
-                box_crs = [bbox[0],bbox[1]],
-                structure = 'CODEX Nuclei',
-                properties = feature_dict
-            )
+            if not nuc_poly is None:
+                self.annotations.add_shape(
+                    poly = nuc_poly,
+                    box_crs = [nuc_bbox[0]+bbox[0],nuc_bbox[1]+bbox[1]],
+                    structure = 'CODEX Nuclei',
+                    properties = feature_dict
+                )
 
         
 def get_tissue_mask(gc,token,image_item_id):
@@ -345,11 +376,9 @@ def get_tissue_mask(gc,token,image_item_id):
                 )
             )
         )
-        print(f'shape of thumbnail{np.shape(thumb)}')
         thumb_frame_list.append(np.max(thumb,axis=-1)[:,:,None])
     
     thumb_array = np.concatenate(tuple(thumb_frame_list),axis=-1)
-    print(f'shape of thumb array{np.shape(thumb_array)}')
     thumbX, thumbY = np.shape(thumb_array)[1], np.shape(thumb_array)[0]
     scale_x = image_metadata['sizeX']/thumbX
     scale_y = image_metadata['sizeY']/thumbY
@@ -530,6 +559,36 @@ def main(args):
                 feature_extractor.get_features(nuc_coords)
                 
         all_nuc_annotations = wak.Histomics(feature_extractor.annotations).json
+
+        print(type(all_nuc_annotations))
+        if isinstance(all_nuc_annotations,list):
+            print(len(all_nuc_annotations))
+            if len(all_nuc_annotations)>0:
+                print(type(all_nuc_annotations[0]))
+                if isinstance(all_nuc_annotations[0],dict):
+                    print(list(all_nuc_annotations[0].keys()))
+                    if 'annotation' in all_nuc_annotations[0]:
+                        if 'elements' in all_nuc_annotations[0]['annotation']:
+                            print(f'Number of nuclei: {len(all_nuc_annotations[0]["annotation"]["elements"])}')
+                        else:
+                            print('elements not in all_nuc_annotations[0]["annotation"]')
+                    else:
+                        print('annotation not in all_nuc_annotations[0]')
+                else:
+                    print('Not a dictionary')
+            else:
+                print('No annotations present')
+        elif isinstance(all_nuc_annotations,dict):
+            print(list(all_nuc_annotations.keys()))
+            if 'annotation' in list(all_nuc_annotations.keys()):
+                if 'elements' in list(all_nuc_annotations['annotation'].keys()):
+                    print(f'Number of nuclei: {len(all_nuc_annotations["annotation"]["elements"])}')
+                else:
+                    print('elements not in all_nuc_annotations["annotation"]')
+            else:
+                print('annotation not in all_nuc_annotations')
+        else:
+            print('all_nuc_annotations not a list or dict')
 
     print('Posting annotations')
     # Posting annotations to item
