@@ -238,17 +238,20 @@ class FeatureExtractor:
         """
 
         # Watershed implementation from: https://scikit-image.org/docs/stable/auto_examples/segmentation/plot_watershed.html
-        distance = ndi.distance_transform_edt(nuc_mask)
-        labeled_mask, _ = ndi.label(nuc_mask)
-        coords = peak_local_max(distance,footprint=np.ones((50,50)),labels = labeled_mask)
-        watershed_mask = np.zeros(distance.shape,dtype=bool)
-        watershed_mask[tuple(coords.T)] = True
-        markers, _ = ndi.label(watershed_mask)
-        sub_mask = watershed(-distance,markers,mask=nuc_mask)
+        #distance = ndi.distance_transform_edt(nuc_mask)
+        #labeled_mask, _ = ndi.label(nuc_mask)
+        #coords = peak_local_max(distance,footprint=np.ones((50,50)),labels = labeled_mask)
+        #watershed_mask = np.zeros(distance.shape,dtype=bool)
+        #watershed_mask[tuple(coords.T)] = True
+        #markers, _ = ndi.label(watershed_mask)
+        #sub_mask = watershed(-distance,markers,mask=nuc_mask)
         #sub_mask = sub_mask>0
 
         # Filtering out small objects again
-        sub_mask = remove_small_objects(sub_mask,10) if sub_mask.max()>1 else sub_mask
+        #sub_mask = remove_small_objects(sub_mask,10) if sub_mask.max()>1 else sub_mask
+
+        sub_mask = nuc_mask>0
+        sub_mask = remove_small_objects(sub_mask,10) if np.sum(sub_mask)>1 else sub_mask
 
         return sub_mask
 
@@ -301,7 +304,7 @@ class FeatureExtractor:
                             polygon_list.append(made_valid)
 
                     else:
-                        if obj.geom_type=='Polygon':
+                        if obj_poly.geom_type=='Polygon':
                             polygon_list.append(obj_poly)
                 
                 if len(polygon_list)>0:

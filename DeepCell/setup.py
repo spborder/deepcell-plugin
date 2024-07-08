@@ -51,7 +51,7 @@ setup(
         'girder-slicer-cli-web',
         'girder-client',
         'ctk-cli',
-        'wsi-annotations-kit==1.4.9',
+        'wsi-annotations-kit>=1.4.9',
         'deepcell-toolbox>=0.12.1',
         'deepcell==0.12.9',
         'tqdm'
