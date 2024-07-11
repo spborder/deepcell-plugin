@@ -430,7 +430,8 @@ def get_tissue_mask(gc,token,image_item_id):
         merged_tissue = merged_tissue.geoms
 
     # Creating mask from the exterior coordinates
-    wsi_tissue_mask = np.zeros((image_metadata['sizeY'],image_metadata['sizeX']))
+    #wsi_tissue_mask = np.zeros((image_metadata['sizeY'],image_metadata['sizeX']))
+    """
     for t in merged_tissue:
 
         poly_exterior = list(t.exterior.coords)
@@ -442,6 +443,31 @@ def get_tissue_mask(gc,token,image_item_id):
         wsi_tissue_mask[rows,cols] = 1
 
     return wsi_tissue_mask
+    """
+    return merged_tissue
+    
+
+def make_patch_filter(intersect_regions, test_patch):
+    """
+    Making a mask just for a single patch and it's intersecting regions
+    """
+
+    test_patch_bounds = list(test_patch.bounds)
+    intersect_mask = np.zeros((int(test_patch_bounds[3]-test_patch_bounds[1]),int(test_patch_bounds[2]-test_patch_bounds[0])))
+    for t in intersect_regions:
+
+        poly_exterior = list(t.exterior.coords)
+        # x = cols, y = rows
+        x_coords = [int(i[0]-test_patch_bounds[0]) for i in poly_exterior]
+        y_coords = [int(i[1]-test_patch_bounds[1]) for i in poly_exterior]
+
+        rows, cols = polygon(r = y_coords, c = x_coords, shape = (np.shape(intersect_mask)[0],np.shape(intersect_mask)[1]))
+        intersect_mask[rows,cols] = 1
+
+    return intersect_mask
+    
+
+
 
 
 def main(args):
@@ -510,10 +536,18 @@ def main(args):
             print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
             next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
 
-            region_filter = tissue_mask[int(new_patch.top):int(new_patch.bottom),int(new_patch.left):int(new_patch.right)]
-            if np.sum(region_filter)>0:
+            #region_filter = tissue_mask[int(new_patch.top):int(new_patch.bottom),int(new_patch.left):int(new_patch.right)]
+            #if np.sum(region_filter)>0:
+            patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
+            if any([patch_box.intersects(i) for i in tissue_mask]):
                 # Getting features and annotations within that region
                 region_annotations = cell_finder.predict(next_region,args.nuclei_frame)
+
+                # Creating the region filter
+                region_filter = make_patch_filter(
+                    intersect_regions = [i for i in tissue_mask if patch_box.intersects(i)],
+                    test_patch = patch_box
+                )
 
                 # Getting the same region from the tissue mask
                 region_annotations = region_annotations[:,:,0] * region_filter
