@@ -93,6 +93,7 @@ RUN python --version && pip --version && pip freeze
 
 # define entrypoint through which all CLIs can be run
 WORKDIR $deep_cell_path/deepcell_plugin/cli
+LABEL entry_path = $deep_cell_path/deepcell_plugin/cli
 
 # Test our entrypoint.  If we have incompatible versions of numpy and
 # openslide, one of these will fail

@@ -264,19 +264,19 @@ class FeatureExtractor:
         nuc_bbox = list(nuc_poly.bounds)
 
         nuc_mask = self.make_mask(nuc_poly)
-        nuc_mask = np.pad(nuc_mask,pad_width=1)
+        nuc_mask = np.pad(nuc_mask,(1,1),constant_values=0)
         nuc_mask = np.squeeze(self.post_process_mask(nuc_mask))
 
         # multi-frame image array
         nuc_image = self.get_image_region(nuc_bbox)
-        nuc_image = np.pad(nuc_image,pad_width=1)
+        nuc_image = np.pad(nuc_image,(1,1),constant_values=0)[:,:,1:-1]
 
         labeled_nuc_mask = label(nuc_mask)
         for i in np.unique(labeled_nuc_mask).tolist()[1:]:
-            masked_image_pixels = nuc_image[labeled_nuc_mask==i]
+            masked_image_pixels = nuc_image * (np.uint8(labeled_nuc_mask==i))[:,:,None]
 
-            mean_vals = np.nanmean(masked_image_pixels,axis=0)
-            std_vals = np.nanstd(masked_image_pixels,axis = 0)
+            mean_vals = np.nanmean(masked_image_pixels,axis= (0,1))
+            std_vals = np.nanstd(masked_image_pixels,axis = (0,1))
 
             feature_dict = {
                 'Channel Means': [float(i) if not np.isnan(i) else 0 for i in mean_vals.tolist()],
