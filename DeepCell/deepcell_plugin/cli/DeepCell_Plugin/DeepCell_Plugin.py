@@ -45,6 +45,7 @@ from shapely.geometry import Polygon, box, Point, MultiPoint, shape
 from shapely.validation import make_valid
 from shapely.ops import unary_union, voronoi_diagram
 from skimage.draw import polygon
+from math import pi
 
 import rasterio.features
 
@@ -57,45 +58,11 @@ import tarfile
 import zipfile
 from tqdm import tqdm
 
-def extract_archive(file_path, path="."):
-    """Extracts an archive if it matches tar, tar.gz, tar.bz, or zip formats.
-
-    Args:
-        file_path: Path to the archive file.
-        path: Where to extract the archive file.
-
-    Returns:
-        True if a match was found and an archive extraction was completed,
-        False otherwise.
-    """
-    logging.basicConfig(level=logging.INFO)
-
-    file_path = os.fspath(file_path) if isinstance(file_path, os.PathLike) else file_path
-    path = os.fspath(path) if isinstance(path, os.PathLike) else path
-
-    logging.info(f'Extracting {file_path}')
-
-    status = False
-
-    if tarfile.is_tarfile(file_path):
-        with tarfile.open(file_path) as archive:
-            archive.extractall(path)
-        status = True
-    elif zipfile.is_zipfile(file_path):
-        with zipfile.ZipFile(file_path) as archive:
-            archive.extractall(path)
-        status = True
-
-    if status:
-        logging.info(f'Successfully extracted {file_path} into {path}')
-    else:
-        logging.info(f'Failed to extract {file_path} into {path}')
-
 
 class DeepCellHandler:
     def __init__(self, gc, image_id: str, user_token: str):
 
-        self.model_path = Path.home() / ".deepcell/models"
+        self.model_path = Path("../.deepcell/models")
 
         # loading model
         model_weights = self.model_path / 'NuclearSegmentation'
@@ -109,50 +76,69 @@ class DeepCellHandler:
 
     def predict(self,region_coords:list, frame_index:int):
 
+        print(f'region_coords: {region_coords}')
         # This expects an input image with channels XY (grayscale)
-        # Step 1: Expanding image dimensions to expected rank (4)
-        image = self.get_image_region(region_coords,frame_index)
+        non_nones = [i for i in region_coords if not i is None]
+
+        batch_size = len(non_nones)
+        patch_size = int(non_nones[0][3]-non_nones[0][1])
+        image_batch = np.zeros((batch_size,patch_size,patch_size))
+        for idx,r in enumerate(non_nones):
+            image = self.get_image_region(r,frame_index)
+            image_batch[idx,:,:] += image
+
+        # Image batch has to have rank=4
+        image_batch = image_batch[:,:,:,None]
         if not image is None:    
-            # Expected input is one batch of 2D images    
-            image = image[:,:,None]
-
             # Step 2: Generate labeled image
-            labeled_image = self.model.predict(image)
+            labeled_image = self.model.predict(image_batch)
 
-            # Getting rid of the extra dimensions
-            labeled_image = np.squeeze(labeled_image)
-            # one-hot labeling
-            processed_nuclei = labeled_image[:,:,None]
-
-            #TODO: There should be a way to add this post processing function or modify the existing deepwatershed postprocessing function
-            # Step 3: Removing small pieces
-            #processed_nuclei = remove_small_objects(labeled_image>0,self.min_size)
-
+            # Getting rid of the extra dimensions (BXYC, C will be removed)
+            processed_nuclei = [labeled_image[i,:,:,:] for i in range(batch_size)]
+            print([np.shape(i) for i in processed_nuclei])
             return processed_nuclei
         else:
             print('No image, some PIL.UnidentifiedImageError thing')
             return None
 
-    def get_image_region(self,coords_list,frame_index):
+    def get_image_region(self,coords_list: list,frame_index):
         
         try:
             if isinstance(frame_index,list):
                 image_region = np.zeros((int(coords_list[3]-coords_list[1]),int(coords_list[2]-coords_list[0])))
                 for f in frame_index:
-                    image_region += np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+                    image_region += np.array(
+                        Image.open(
+                            BytesIO(
+                                requests.get(
+                                    self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}'
+                                    ).content
+                                )
+                            )
+                        )
                 
                 # Return mean of intersecting channels
                 image_region /= len(frame_index)
                 image_region = np.uint8(image_region)
             else:
-                image_region = np.array(Image.open(BytesIO(requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}').content)))
+                image_region = np.array(
+                    Image.open(
+                        BytesIO(
+                            requests.get(
+                                self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}'
+                                ).content
+                            )
+                        )
+                    )
             
             return image_region
         except UnidentifiedImageError:
             print('Error found :(')
             print(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}')
 
-            response = requests.get(self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}')
+            response = requests.get(
+                self.gc.urlBase+f'/item/{self.image_id}/tiles/region?token={self.user_token}&frame={frame_index}&left={coords_list[0]}&top={coords_list[1]}&right={coords_list[2]}&bottom={coords_list[3]}'
+                )
             print(f'Status Code: {response.status_code}')
 
             return None
@@ -211,28 +197,35 @@ class FeatureExtractor:
         """
         # Finding peaks within mask:
         distance = ndi.distance_transform_edt(pre_mask)
-
-        coords = peak_local_max(distance, num_peaks=1+np.sum(pre_mask)//1000)
-
-        voronoi_islands_mask = np.zeros(distance.shape,dtype=bool)
-        voronoi_islands_mask[tuple(coords.T)] = True
-        voronoi_islands_mask = np.uint8(voronoi_islands_mask)
-
-        geom_list = []
-        for c,v in rasterio.features.shapes(voronoi_islands_mask, connectivity=8):
-            geom_list.append(list(shape(c).centroid.coords))
+        approx_radius = (1000/pi)**(0.5)
+        approx_n_cells = 1+np.sum(pre_mask)//1000
         
-        nuc_voronoi = voronoi_diagram(MultiPoint(geom_list), envelope= box(0,0,pre_mask.shape[1],pre_mask.shape[0]))
+        remaining_distance = distance.copy()
+        voronoi_point_list = []
+        for n in range(approx_n_cells):
+            max_dist = np.max(remaining_distance)
+
+            mean_point = np.mean(np.argwhere(remaining_distance==max_dist),axis=0)
+
+            mask_y_min = int(np.minimum(0,mean_point[0]-approx_radius))
+            mask_x_min = int(np.minimum(0,mean_point[1]-approx_radius))
+            mask_y_max = int(np.minimum(pre_mask.shape[0],mean_point[0]+approx_radius))
+            mask_x_max = int(np.minimum(pre_mask.shape[1],mean_point[1]+approx_radius))
+
+            remaining_distance[mask_y_min:mask_y_max,mask_x_min:mask_x_max] = 0
+            voronoi_point_list.append(Point(mean_point[1],mean_point[0]))
+
+        nuc_voronoi = voronoi_diagram(MultiPoint(voronoi_point_list),envelope=box(0,0,pre_mask.shape[1],pre_mask.shape[0]))
         new_nuc_mask = np.zeros_like(pre_mask).astype(np.uint8)
         for new_nuc in nuc_voronoi.geoms:
             if new_nuc.geom_type=='Polygon' and new_nuc.is_valid and new_nuc.area>800:
                 try:
-                    nuc_mask = rasterio.features.rasterize([new_nuc.buffer(-1)],out_shape = new_nuc_mask.shape)
+                    nuc_mask = rasterio.features.rasterize([new_nuc.buffer(-1)],out_shape = pre_mask.shape)
                     nuc_mask = np.uint8(np.bitwise_and(nuc_mask,pre_mask))
 
                     new_nuc_mask += nuc_mask
                 except ValueError:
-                    print(f'ValueError encountered with object: {new_nuc.area}')
+                    continue
 
         return new_nuc_mask
 
@@ -295,88 +288,46 @@ class FeatureExtractor:
                 )
 
         
-def get_tissue_mask(gc,token,image_item_id):
+def get_tissue_mask(gc,token,image_item_id, frame_index):
     """
     Extract tissue mask and use to filter out false positive cell segmentations outside of the main tissue
     """
     image_metadata = gc.get(f'/item/{image_item_id}/tiles')
 
-    thumb_frame_list = []
-    for f in range(len(image_metadata['frames'])):
-        thumb = np.array(
-            Image.open(
-                BytesIO(
-                    requests.get(
-                        f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?frame={f}&token={token}'
-                    ).content
-                )
+    thumb = np.array(
+        Image.open(
+            BytesIO(
+                requests.get(
+                    f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?frame={frame_index}&token={token}'
+                ).content
             )
         )
-        thumb_frame_list.append(np.max(thumb,axis=-1)[:,:,None])
-    
-    thumb_array = np.concatenate(tuple(thumb_frame_list),axis=-1)
-    thumbX, thumbY = np.shape(thumb_array)[1], np.shape(thumb_array)[0]
+    )
+
+    thumbX, thumbY = np.shape(thumb)[1], np.shape(thumb)[0]
     scale_x = image_metadata['sizeX']/thumbX
     scale_y = image_metadata['sizeY']/thumbY
 
-    # Mean of all channels/frames to make grayscale mask
-    gray_mask = np.squeeze(np.mean(thumb_array,axis=-1))
-
-    threshold_val = threshold_otsu(gray_mask)
-    tissue_mask = gray_mask <= threshold_val
+    threshold_val = threshold_otsu(thumb)
+    tissue_mask = thumb <= threshold_val
 
     tissue_mask = remove_small_holes(tissue_mask,area_threshold=150)
 
-    print(f'shape of tissue mask {np.shape(tissue_mask)}')
-    print(f'sum of tissue_mask: {np.sum(tissue_mask)}')
     labeled_mask = label(tissue_mask)
-    tissue_pieces = np.unique(labeled_mask).tolist()
+    #tissue_pieces = np.unique(labeled_mask).tolist()
+    print(f'tissue pieces found: {np.max(labeled_mask)}')
 
-    tissue_shape_list = []
-    for piece in tissue_pieces[1:]:
-        tissue_contours = find_contours(labeled_mask==piece)
+    merged_tissue = []
+    for c,v in rasterio.features.shapes(labeled_mask,connectivity = 8):
+        tissue_piece_coords = list(shape(c).centroid.coords)
+        scaled_tissue_coords = [(i[0]*scale_x, i[1]*scale_y) for i in tissue_piece_coords]
 
-        for contour in tissue_contours:
+        merged_tissue.append(Point(scaled_tissue_coords))
 
-            poly_list = [(i[1]*scale_x,i[0]*scale_y) for i in contour]
-            if len(poly_list)>2:
-                obj_polygon = Polygon(poly_list)
+    print(f'merged_tissue points: {merged_tissue}')
+    merged_tissue = [MultiPoint(merged_tissue).convex_hull]
+    print(f'merged_tissue convex_hull: {merged_tissue}')
 
-                if not obj_polygon.is_valid:
-                    made_valid = make_valid(obj_polygon)
-
-                    if made_valid.geom_type == 'Polygon':
-                        tissue_shape_list.append(made_valid)
-                    elif made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
-                        for g in made_valid.geoms:
-                            if g.geom_type=='Polygon':
-                                tissue_shape_list.append(g)
-                
-                else:
-                    tissue_shape_list.append(obj_polygon)
-
-    # Merging shapes together to remove holes
-    merged_tissue = unary_union(tissue_shape_list)
-    if merged_tissue.geom_type == 'Polygon':
-        merged_tissue = [merged_tissue]
-    elif merged_tissue.geom_type in ['MultiPolygon','GeometryCollection']:
-        merged_tissue = merged_tissue.geoms
-
-    # Creating mask from the exterior coordinates
-    #wsi_tissue_mask = np.zeros((image_metadata['sizeY'],image_metadata['sizeX']))
-    """
-    for t in merged_tissue:
-
-        poly_exterior = list(t.exterior.coords)
-        # x = cols, y = rows
-        x_coords = [int(i[0]) for i in poly_exterior]
-        y_coords = [int(i[1]) for i in poly_exterior]
-
-        rows, cols = polygon(r = y_coords, c = x_coords, shape = (image_metadata['sizeY'],image_metadata['sizeX']))
-        wsi_tissue_mask[rows,cols] = 1
-
-    return wsi_tissue_mask
-    """
     return merged_tissue
     
 
@@ -463,68 +414,75 @@ def main(args):
     patch_annotations = iter(patch_annotations)
 
     # Get tissue mask for the whole slide and use that to mask predictions at the end
-    tissue_mask = get_tissue_mask(gc,args.girderToken,image_id)
+    tissue_mask = get_tissue_mask(gc,args.girderToken,image_id, args.nuclei_frame)
 
     # Total number of iterations needed with batch_size
     batch_number = ceil(len(patch_annotations.patch_list)/batch_size)
 
-    for batch in range(batch_number):
-        if not (batch * batch_size)>=len(patch_annotations.patch_list):
+    try:
+        for batch in range(batch_number):
+            if not (batch * batch_size)>=len(patch_annotations.patch_list):
 
-            patch_batch = []
-            for x in range(batch_size):
-                # Getting the next patch regions
-                new_patch = next(patch_annotations)
-                print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
-                next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
+                patch_batch = []
+                for x in range(batch_size):
+                    # Getting the next patch regions
+                    new_patch = next(patch_annotations)
+                    print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
+                    next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
 
-                patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
+                    patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
 
-                if any([patch_box.intersects(i) for i in tissue_mask]):
-                    patch_batch.append(next_region)
+                    if any([patch_box.intersects(i) for i in tissue_mask]):
+                        patch_batch.append(next_region)
+                    else:
+                        patch_batch.append(None)
 
-        else:
-            patch_batch = []
-            print(f'Remainder patches: {len(patch_annotations.patch_list)-((batch-1)*batch_size)}')
-            for x in range(len(patch_annotations.patch_list)-((batch-1)*batch_size)):
+            else:
+                patch_batch = []
+                print(f'Remainder patches: {len(patch_annotations.patch_list)-((batch-1)*batch_size)}')
+                for x in range(len(patch_annotations.patch_list)-((batch-1)*batch_size)):
 
-                # Getting the next patch regions
-                new_patch = next(patch_annotations)
-                print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
-                next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
+                    # Getting the next patch regions
+                    new_patch = next(patch_annotations)
+                    print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
+                    next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
 
-                patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
+                    patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
 
-                if any([patch_box.intersects(i) for i in tissue_mask]):
-                    patch_batch.append(next_region)
+                    if any([patch_box.intersects(i) for i in tissue_mask]):
+                        patch_batch.append(next_region)
+                    else:
+                        patch_batch.append(None)
 
-        region_annotations = cell_finder.predict(patch_batch,args.nuclei_frame)
+            print(f'patch_batch: {patch_batch}')
+            if not all([i is None for i in patch_batch]):
+                region_annotations = cell_finder.predict(patch_batch,args.nuclei_frame)
 
-        for y in range(batch_size):
+                for y in range(batch_size):
 
-            y_patch = patch_batch[y]
-            patch_box = box(y_patch.left,y_patch.top,y_patch.right,y_patch.bottom)
+                    y_patch = patch_batch[y]
+                    patch_box = box(y_patch.left,y_patch.top,y_patch.right,y_patch.bottom)
 
-            y_annotations = region_annotations[y,:,:,:]
+                    y_annotations = region_annotations[y,:,:,:]
 
-            # Creating the region filter
-            region_filter = make_patch_filter(
-                intersect_regions = [i for i in tissue_mask if patch_box.intersects(i)],
-                test_patch = patch_box
-            )
+                    # Creating the region filter
+                    region_filter = make_patch_filter(
+                        intersect_regions = [i for i in tissue_mask if patch_box.intersects(i)],
+                        test_patch = patch_box
+                    )
 
-            # Getting the same region from the tissue mask
-            y_annotations = y_annotations[:,:,0] * region_filter
-            y_annotations = label(y_annotations)[:,:,None]
+                    # Getting the same region from the tissue mask
+                    y_annotations = y_annotations[:,:,0] * region_filter
+                    y_annotations = label(y_annotations)[:,:,None]
 
-            patch_annotations.add_patch_mask(
-                mask = y_annotations,
-                patch_obj = y_patch,
-                mask_type = 'one-hot-labeled',
-                structure = ['CODEX Nuclei']
-            )
-
-
+                    patch_annotations.add_patch_mask(
+                        mask = y_annotations,
+                        patch_obj = y_patch,
+                        mask_type = 'one-hot-labeled',
+                        structure = ['CODEX Nuclei']
+                    )
+    except StopIteration:
+        print(f'All out!')
 
     print('--------------------------------------------------')
     print('Cleaning up annotations')
@@ -559,36 +517,6 @@ def main(args):
                 feature_extractor.get_features(nuc_coords)
                 
         all_nuc_annotations = wak.Histomics(feature_extractor.annotations).json
-
-        print(type(all_nuc_annotations))
-        if isinstance(all_nuc_annotations,list):
-            print(len(all_nuc_annotations))
-            if len(all_nuc_annotations)>0:
-                print(type(all_nuc_annotations[0]))
-                if isinstance(all_nuc_annotations[0],dict):
-                    print(list(all_nuc_annotations[0].keys()))
-                    if 'annotation' in all_nuc_annotations[0]:
-                        if 'elements' in all_nuc_annotations[0]['annotation']:
-                            print(f'Number of nuclei: {len(all_nuc_annotations[0]["annotation"]["elements"])}')
-                        else:
-                            print('elements not in all_nuc_annotations[0]["annotation"]')
-                    else:
-                        print('annotation not in all_nuc_annotations[0]')
-                else:
-                    print('Not a dictionary')
-            else:
-                print('No annotations present')
-        elif isinstance(all_nuc_annotations,dict):
-            print(list(all_nuc_annotations.keys()))
-            if 'annotation' in list(all_nuc_annotations.keys()):
-                if 'elements' in list(all_nuc_annotations['annotation'].keys()):
-                    print(f'Number of nuclei: {len(all_nuc_annotations["annotation"]["elements"])}')
-                else:
-                    print('elements not in all_nuc_annotations["annotation"]')
-            else:
-                print('annotation not in all_nuc_annotations')
-        else:
-            print('all_nuc_annotations not a list or dict')
 
     print('Posting annotations')
     # Posting annotations to item
