@@ -29,7 +29,7 @@ from ctk_cli import CLIArgumentParser
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
 #from deepcell.utils._auth import extract_archive
-from skimage.morphology import remove_small_objects, remove_small_holes, binary_erosion
+from skimage.morphology import remove_small_objects, remove_small_holes, binary_erosion, convex_hull_image
 from skimage.filters import threshold_otsu
 from skimage.measure import find_contours, label
 from skimage.segmentation import watershed
@@ -74,17 +74,16 @@ class DeepCellHandler:
         self.image_id = image_id
         self.user_token = user_token
 
-    def predict(self,region_coords:list, frame_index:int):
+    def predict(self,region_patches:list, frame_index:int):
 
-        print(f'region_coords: {region_coords}')
         # This expects an input image with channels XY (grayscale)
-        non_nones = [i for i in region_coords if not i is None]
+        non_nones = [i for i in region_patches if not i is None]
 
         batch_size = len(non_nones)
-        patch_size = int(non_nones[0][3]-non_nones[0][1])
+        patch_size = int(non_nones[0].bottom-non_nones[0].top)
         image_batch = np.zeros((batch_size,patch_size,patch_size))
         for idx,r in enumerate(non_nones):
-            image = self.get_image_region(r,frame_index)
+            image = self.get_image_region([r.left, r.top, r.right, r.bottom],frame_index)
             image_batch[idx,:,:] += image
 
         # Image batch has to have rank=4
@@ -95,7 +94,6 @@ class DeepCellHandler:
 
             # Getting rid of the extra dimensions (BXYC, C will be removed)
             processed_nuclei = [labeled_image[i,:,:,:] for i in range(batch_size)]
-            print([np.shape(i) for i in processed_nuclei])
             return processed_nuclei
         else:
             print('No image, some PIL.UnidentifiedImageError thing')
@@ -272,10 +270,10 @@ class FeatureExtractor:
             feature_dict = {
                 'Channel Means': [float(i) if not np.isnan(i) else 0 for i in mean_vals.tolist()],
                 'Channel Stds': [float(i) if not np.isnan(i) else 0 for i in std_vals.tolist()],
-                'Area': np.sum(labeled_nuc_mask==i)
+                'Area': float(np.sum(labeled_nuc_mask==i))
             }
 
-            for c,v in rasterio.features.shapes(labeled_nuc_mask==i,connectivity=8):
+            for c,v in rasterio.features.shapes(np.uint8(labeled_nuc_mask==i),connectivity=8):
                 
                 nuc_poly = shape(c)
                 bbox = list(nuc_poly.bounds)
@@ -288,45 +286,68 @@ class FeatureExtractor:
                 )
 
         
-def get_tissue_mask(gc,token,image_item_id, frame_index):
+def get_tissue_mask(gc,token,image_item_id):
     """
     Extract tissue mask and use to filter out false positive cell segmentations outside of the main tissue
     """
     image_metadata = gc.get(f'/item/{image_item_id}/tiles')
+    if not 'frames' in image_metadata:
+        # Grabbing the thumbnail of the image (RGB)
+        thumbnail_img = Image.open(BytesIO(requests.get(f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?token={token}').content))
+        thumb_array = np.array(thumbnail_img)
 
-    thumb = np.array(
-        Image.open(
-            BytesIO(
-                requests.get(
-                    f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?frame={frame_index}&token={token}'
-                ).content
-            )
-        )
-    )
+    else:
+        # Getting the max projection of the thumbnail
+        thumb_frame_list = []
+        for f in range(len(image_metadata['frames'])):
+            thumb = np.array(Image.open(BytesIO(requests.get(f'{gc.urlBase}/item/{image_item_id}/tiles/thumbnail?frame={f}&token={token}').content)))
+            thumb_frame_list.append(np.max(thumb,axis=-1)[:,:,None])
 
-    thumbX, thumbY = np.shape(thumb)[1], np.shape(thumb)[0]
+        thumb_array = np.concatenate(tuple(thumb_frame_list),axis=-1)
+
+    # Getting scale factors for thumbnail image to full-size image
+    thumbX, thumbY = np.shape(thumb_array)[1],np.shape(thumb_array)[0]
     scale_x = image_metadata['sizeX']/thumbX
     scale_y = image_metadata['sizeY']/thumbY
 
-    threshold_val = threshold_otsu(thumb)
-    tissue_mask = thumb <= threshold_val
+    # Mean of all channels/frames to make grayscale mask
+    gray_mask = np.squeeze(np.mean(thumb_array,axis=-1))
+
+    threshold_val = threshold_otsu(gray_mask)
+    tissue_mask = gray_mask <= threshold_val
 
     tissue_mask = remove_small_holes(tissue_mask,area_threshold=150)
 
     labeled_mask = label(tissue_mask)
-    #tissue_pieces = np.unique(labeled_mask).tolist()
-    print(f'tissue pieces found: {np.max(labeled_mask)}')
+    tissue_pieces = np.unique(labeled_mask).tolist()
+    tissue_shape_list = []
+    for piece in tissue_pieces[1:]:
+        tissue_contours = find_contours(labeled_mask==piece)
 
-    merged_tissue = []
-    for c,v in rasterio.features.shapes(labeled_mask,connectivity = 8):
-        tissue_piece_coords = list(shape(c).centroid.coords)
-        scaled_tissue_coords = [(i[0]*scale_x, i[1]*scale_y) for i in tissue_piece_coords]
+        for contour in tissue_contours:
 
-        merged_tissue.append(Point(scaled_tissue_coords))
+            poly_list = [(i[1]*scale_x,i[0]*scale_y) for i in contour]
+            if len(poly_list)>2:
+                obj_polygon = Polygon(poly_list)
 
-    print(f'merged_tissue points: {merged_tissue}')
-    merged_tissue = [MultiPoint(merged_tissue).convex_hull]
-    print(f'merged_tissue convex_hull: {merged_tissue}')
+                if not obj_polygon.is_valid:
+                    made_valid = make_valid(obj_polygon)
+
+                    if made_valid.geom_type=='Polygon':
+                        tissue_shape_list.append(made_valid)
+                    elif made_valid.geom_type in ['MultiPolygon','GeometryCollection']:
+                        for g in made_valid.geoms:
+                            if g.geom_type=='Polygon':
+                                tissue_shape_list.append(g)
+                else:
+                    tissue_shape_list.append(obj_polygon)
+
+    # Merging shapes together to remove holes
+    merged_tissue = unary_union(tissue_shape_list)
+    if merged_tissue.geom_type=='Polygon':
+        merged_tissue = [merged_tissue]
+    elif merged_tissue.geom_type in ['MultiPolygon','GeometryCollection']:
+        merged_tissue = merged_tissue.geoms
 
     return merged_tissue
     
@@ -414,47 +435,29 @@ def main(args):
     patch_annotations = iter(patch_annotations)
 
     # Get tissue mask for the whole slide and use that to mask predictions at the end
-    tissue_mask = get_tissue_mask(gc,args.girderToken,image_id, args.nuclei_frame)
+    tissue_mask = get_tissue_mask(gc,args.girderToken,image_id)
 
     # Total number of iterations needed with batch_size
     batch_number = ceil(len(patch_annotations.patch_list)/batch_size)
 
-    try:
-        for batch in range(batch_number):
-            if not (batch * batch_size)>=len(patch_annotations.patch_list):
+    for batch in range(batch_number):
 
-                patch_batch = []
-                for x in range(batch_size):
-                    # Getting the next patch regions
-                    new_patch = next(patch_annotations)
-                    print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
-                    next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
+        patch_batch = []
+        try:
+            for x in range(batch_size):
+                # Getting the next patch regions
+                new_patch = next(patch_annotations)
+                print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
 
-                    patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
+                patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
+                if any([patch_box.intersects(i) for i in tissue_mask]):
+                    patch_batch.append(new_patch)
+                else:
+                    patch_batch.append(None)
+        except StopIteration:
+            print('All out!')
 
-                    if any([patch_box.intersects(i) for i in tissue_mask]):
-                        patch_batch.append(next_region)
-                    else:
-                        patch_batch.append(None)
-
-            else:
-                patch_batch = []
-                print(f'Remainder patches: {len(patch_annotations.patch_list)-((batch-1)*batch_size)}')
-                for x in range(len(patch_annotations.patch_list)-((batch-1)*batch_size)):
-
-                    # Getting the next patch regions
-                    new_patch = next(patch_annotations)
-                    print(f'On patch: {patch_annotations.patch_idx} of {len(patch_annotations.patch_list)}')
-                    next_region = [new_patch.left, new_patch.top, new_patch.right,new_patch.bottom]
-
-                    patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
-
-                    if any([patch_box.intersects(i) for i in tissue_mask]):
-                        patch_batch.append(next_region)
-                    else:
-                        patch_batch.append(None)
-
-            print(f'patch_batch: {patch_batch}')
+        if len(patch_batch)>0:
             if not all([i is None for i in patch_batch]):
                 region_annotations = cell_finder.predict(patch_batch,args.nuclei_frame)
 
@@ -463,7 +466,7 @@ def main(args):
                     y_patch = patch_batch[y]
                     patch_box = box(y_patch.left,y_patch.top,y_patch.right,y_patch.bottom)
 
-                    y_annotations = region_annotations[y,:,:,:]
+                    y_annotations = region_annotations[y]
 
                     # Creating the region filter
                     region_filter = make_patch_filter(
@@ -481,8 +484,7 @@ def main(args):
                         mask_type = 'one-hot-labeled',
                         structure = ['CODEX Nuclei']
                     )
-    except StopIteration:
-        print(f'All out!')
+
 
     print('--------------------------------------------------')
     print('Cleaning up annotations')
