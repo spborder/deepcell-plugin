@@ -42,6 +42,26 @@
       <channel>input</channel>
       <index>3</index>
     </boolean>
+    <string-enumeration>
+      <name>method</name>
+      <label>Segmentation Method</label>
+      <description>What method to use to segment cells. Available options include DeepCell, CellPose, and Otsu's.</description>
+      <default>DeepCell</default>
+      <element>DeepCell</element>
+      <element>CellPose</element>
+      <element>Otsu's</element>
+      <index>4</index>
+    </string-enumeration>
+    <string-enumeration>
+      <name>post_processor</name>
+      <label>Post-Processing Method</label>
+      <description>Method to use to post-process raw predictions from the selected method. Available options include Watershed, Voronoi, or None.</description>
+      <default>Watershed</default>
+      <element>Watershed</element>
+      <element>Voronoi</element>
+      <element>None</element>
+      <index>5</index>
+    </string-enumeration>
   </parameters>
   <parameters advanced="true">
     <label>Girder API URL and Key</label>
@@ -51,15 +71,22 @@
       <longflag>patch-size</longflag>
       <label>Patch Size</label>
       <description>Size of patches to extract across selected region</description>
-      <default>256</default>
+      <default>512</default>
     </integer>
-    <string>
-      <name>deepCellApi</name>
-      <longflag>deepCell-api</longflag>
-      <label>DeepCell API Key</label>
-      <description>DeepCell API if model is not downloaded on the server side</description>
-      <default></default>
-    </string>
+    <integer>
+      <name>cyto_pixels</name>
+      <longflag>cyto-pixels</longflag>
+      <label>Cytoplasm Pixels</label>
+      <description>How many pixels to dilate cell segmentation masks for quantifying marker expression.</description>
+      <default>5</default>
+    </integer>
+    <integer>
+      <name>approx_cell_radius</name>
+      <longflag>approx-cell-radius</longflag>
+      <label>Approximate Cell Radius</label>
+      <description>Approximate cell radius to use when post-processing predictions</description>
+      <default>15</default>
+    </integer>
     <string>
       <name>girderApiUrl</name>
       <longflag>api-url</longflag>

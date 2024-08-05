@@ -55,7 +55,8 @@ setup(
         'deepcell-toolbox>=0.12.1',
         'deepcell==0.12.9',
         'tqdm',
-        'rasterio'
+        'rasterio',
+        'cellpose'
     ],
     license='Apache Software License 2.0',
     keywords='DeepCell_Plugin',

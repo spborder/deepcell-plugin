@@ -28,10 +28,13 @@ from ctk_cli import CLIArgumentParser
 
 sys.path.append('..')
 from deepcell.applications import NuclearSegmentation
-#from deepcell.utils._auth import extract_archive
-from skimage.morphology import remove_small_objects, remove_small_holes, binary_erosion, convex_hull_image
+
+from cellpose import models
+
+from skimage.morphology import remove_small_objects, remove_small_holes
 from skimage.filters import threshold_otsu
 from skimage.measure import find_contours, label
+from skimage.exposure import rescale_intensity
 from skimage.segmentation import watershed
 from skimage.feature import peak_local_max
 from scipy import ndimage as ndi
@@ -49,58 +52,26 @@ from math import pi
 
 import rasterio.features
 
+from typing_extensions import Union
+
 from pathlib import Path
 import tensorflow as tf
 
 import girder_client
-import logging
-import tarfile
-import zipfile
 from tqdm import tqdm
 
 
-class DeepCellHandler:
-    def __init__(self, gc, image_id: str, user_token: str):
-
-        self.model_path = Path("../.deepcell/models")
-
-        # loading model
-        model_weights = self.model_path / 'NuclearSegmentation'
-        model_weights = tf.keras.models.load_model(model_weights)
-
-        self.model = NuclearSegmentation(model = model_weights)
+class CellSegmenter:
+    def __init__(self,gc,image_id:str, user_token:str):
 
         self.gc = gc
         self.image_id = image_id
         self.user_token = user_token
 
-    def predict(self,region_patches:list, frame_index:int):
-
-        # This expects an input image with channels XY (grayscale)
-        non_nones = [i for i in region_patches if not i is None]
-
-        batch_size = len(non_nones)
-        patch_size = int(non_nones[0].bottom-non_nones[0].top)
-        image_batch = np.zeros((batch_size,patch_size,patch_size))
-        for idx,r in enumerate(non_nones):
-            image = self.get_image_region([r.left, r.top, r.right, r.bottom],frame_index)
-            image_batch[idx,:,:] += image
-
-        # Image batch has to have rank=4
-        image_batch = image_batch[:,:,:,None]
-        if not image is None:    
-            # Step 2: Generate labeled image
-            labeled_image = self.model.predict(image_batch)
-
-            # Getting rid of the extra dimensions (BXYC, C will be removed)
-            processed_nuclei = [labeled_image[i,:,:,:] for i in range(batch_size)]
-            return processed_nuclei
-        else:
-            print('No image, some PIL.UnidentifiedImageError thing')
-            return None
-
-    def get_image_region(self,coords_list: list,frame_index):
-        
+    def get_image_region(self,coords_list: list, frame_index: Union[int,list]):
+        """
+        Grabbing image region based on set of bounding box coordinates and frame 
+        """
         try:
             if isinstance(frame_index,list):
                 image_region = np.zeros((int(coords_list[3]-coords_list[1]),int(coords_list[2]-coords_list[0])))
@@ -142,14 +113,131 @@ class DeepCellHandler:
             return None
 
 
+class DeepCellHandler(CellSegmenter):
+    """
+    https://github.com/vanvalenlab/deepcell-tf
+    
+    Greenwald, N.F., Miller, G., Moen, E. et al. Whole-cell segmentation of tissue images with human-level performance using large-scale data annotation and deep learning. Nat Biotechnol 40, 555–565 (2022). https://doi.org/10.1038/s41587-021-01094-0
+    
+    """
+    def __init__(self, gc, image_id: str, user_token: str):
+        super().__init__(gc,image_id,user_token)
+        self.model_path = Path("../.deepcell/models")
+
+        # loading model
+        model_weights = self.model_path / 'NuclearSegmentation'
+        model_weights = tf.keras.models.load_model(model_weights)
+
+        self.model = NuclearSegmentation(model = model_weights)
+
+    def predict(self,region_patches:list, frame_index:Union[int,list]):
+
+        # This expects an input image with channels XY (grayscale)
+        non_nones = [i for i in region_patches if not i is None]
+
+        batch_size = len(non_nones)
+        patch_size = int(non_nones[0].bottom-non_nones[0].top)
+        image_batch = np.zeros((batch_size,patch_size,patch_size))
+        for idx,r in enumerate(non_nones):
+            image = self.get_image_region([r.left, r.top, r.right, r.bottom],frame_index)
+            image_batch[idx,:,:] += image
+
+        # Image batch has to have rank=4
+        image_batch = image_batch[:,:,:,None]
+        if not image_batch is None:    
+            # Step 2: Generate labeled image
+            labeled_image = self.model.predict(image_batch)
+
+            # Getting rid of the extra dimensions (BXYC, C will be removed)
+            processed_nuclei = [labeled_image[i,:,:,:] for i in range(batch_size)]
+            return processed_nuclei
+        else:
+            print('No image, some PIL.UnidentifiedImageError thing')
+            return None
+
+class CellPoseHandler(CellSegmenter):
+    """
+    https://github.com/MouseLand/cellpose
+
+    Stringer, C., Wang, T., Michaelos, M., & Pachitariu, M. (2021). Cellpose: a generalist algorithm for cellular segmentation. Nature methods, 18(1), 100-106. 
+
+    """
+    def __init__(self, gc, image_id:str, user_token:str):
+        super().__init__(gc,image_id,user_token)
+
+        self.model = models.Cellpose(gpu = True, model_type = 'cyto3')
+
+    def predict(self, region_patches:list, frame_index:Union[int,list]):
+        
+        non_nones = [i for i in region_patches if not i is None]
+        batch_size = len(non_nones)
+        patch_size = int(non_nones[0].bottom-non_nones[1].top)
+        image_batch = np.zeros((batch_size,patch_size,patch_size))
+
+        for idx,r in enumerate(non_nones):
+            image = self.get_image_region([r.left,r.top,r.right,r.bottom],frame_index)
+            image_batch[idx,:,:] += image
+
+        # image_batch has rank 4 with dimensions BYXC
+        image_batch = image_batch[:,:,:,None]
+        
+        pred_masks, _, _, _ = self.model.eval(image_batch, diameter = None, channels = [0,0])
+
+        return pred_masks
+        
+
+class OtsuCellHandler(CellSegmenter):
+    """
+    Cell segmentation using classical image analysis
+    """
+    def __init__(self,gc,image_id:str,user_token:str):
+        super().__init__(gc,image_id,user_token)
+
+    def predict(self, region_patches: list, frame_index:Union[int,list]):
+        
+        non_nones = [i for i in region_patches if not i is None]
+
+        processed_nuclei = []
+        for idx,r in enumerate(non_nones):
+            image = self.get_image_region([r.left,r.top,r.right,r.bottom])
+            
+            # Increasing contrast by clipping lowest 0.5% to 0 and highest 0.5% to 1
+            vmin, vmax = np.percentile(image, q=(0.5, 99.5))
+
+            clipped_data = rescale_intensity(
+                image, in_range=(vmin, vmax), out_range=np.float32
+            )
+            image_thresh = threshold_otsu(clipped_data)
+            threshed_image = clipped_data <= image_thresh
+
+            small_removed = remove_small_objects(threshed_image, min_size = 100)
+            holes_removed = ndi.binary_fill_holes(small_removed)
+
+            processed_nuclei.append(holes_removed)
+
+        return processed_nuclei
+
+
+
 class FeatureExtractor:
-    def __init__(self, n_frames, image_id, gc, user_token):
+    def __init__(self,
+                 n_frames,
+                 image_id,
+                 gc,
+                 user_token,
+                 post_processor):
         
         self.n_frames = n_frames
         self.image_id = image_id
         self.gc = gc
         self.user_token = user_token
         self.cyto_pixels = 5
+
+        self.post_processor = post_processor
+
+        self.approx_cell_radius = 15
+
+        self.approx_cell_area = pi*(self.approx_cell_radius**2)
 
         image_meta = self.gc.get(f'/item/{self.image_id}/tiles')
         self.image_bbox = box(0,0,image_meta['sizeX'],image_meta['sizeY'])
@@ -195,8 +283,7 @@ class FeatureExtractor:
         """
         # Finding peaks within mask:
         distance = ndi.distance_transform_edt(pre_mask)
-        approx_radius = (1000/pi)**(0.5)
-        approx_n_cells = 1+np.sum(pre_mask)//1000
+        approx_n_cells = 1+np.sum(pre_mask)//self.approx_cell_area
         
         remaining_distance = distance.copy()
         voronoi_point_list = []
@@ -205,10 +292,10 @@ class FeatureExtractor:
 
             mean_point = np.mean(np.argwhere(remaining_distance==max_dist),axis=0)
 
-            mask_y_min = int(np.minimum(0,mean_point[0]-approx_radius))
-            mask_x_min = int(np.minimum(0,mean_point[1]-approx_radius))
-            mask_y_max = int(np.minimum(pre_mask.shape[0],mean_point[0]+approx_radius))
-            mask_x_max = int(np.minimum(pre_mask.shape[1],mean_point[1]+approx_radius))
+            mask_y_min = int(np.minimum(0,mean_point[0]-self.approx_cell_radius))
+            mask_x_min = int(np.minimum(0,mean_point[1]-self.approx_cell_radius))
+            mask_y_max = int(np.minimum(pre_mask.shape[0],mean_point[0]+self.approx_cell_radius))
+            mask_x_max = int(np.minimum(pre_mask.shape[1],mean_point[1]+self.approx_cell_radius))
 
             remaining_distance[mask_y_min:mask_y_max,mask_x_min:mask_x_max] = 0
             voronoi_point_list.append(Point(mean_point[1],mean_point[0]))
@@ -216,7 +303,7 @@ class FeatureExtractor:
         nuc_voronoi = voronoi_diagram(MultiPoint(voronoi_point_list),envelope=box(0,0,pre_mask.shape[1],pre_mask.shape[0]))
         new_nuc_mask = np.zeros_like(pre_mask).astype(np.uint8)
         for new_nuc in nuc_voronoi.geoms:
-            if new_nuc.geom_type=='Polygon' and new_nuc.is_valid and new_nuc.area>800:
+            if new_nuc.geom_type=='Polygon' and new_nuc.is_valid and new_nuc.area>(0.5*self.approx_cell_area):
                 try:
                     nuc_mask = rasterio.features.rasterize([new_nuc.buffer(-1)],out_shape = pre_mask.shape)
                     nuc_mask = np.uint8(np.bitwise_and(nuc_mask,pre_mask))
@@ -236,7 +323,7 @@ class FeatureExtractor:
         sub_mask = remove_small_objects(sub_mask,10) if np.sum(sub_mask)>1 else sub_mask
 
         # Checking for clumps:
-        if np.sum(sub_mask)>2000:
+        if np.sum(sub_mask)>2*self.approx_cell_area:
             
             new_nuc_mask = self.voronoi_process(sub_mask)
 
@@ -418,11 +505,24 @@ def main(args):
 
     # Creating patch iterator 
     # Initializing deepcell object
-    cell_finder = DeepCellHandler(
-        gc,
-        image_id,
-        args.girderToken
-    )
+    if args.method == 'DeepCell':
+        cell_finder = DeepCellHandler(
+            gc,
+            image_id,
+            args.girderToken
+        )
+    elif args.method == 'Otsu':
+        cell_finder = OtsuCellHandler(
+            gc,
+            image_id,
+            args.girderToken
+        )
+    elif args.method == 'CellPose':
+        cell_finder = CellPoseHandler(
+            gc,
+            image_id,
+            args.girderToken
+        )
 
     if args.input_region == [-1,-1,-1,-1]:
         args.input_region = [0,0,image_tiles_info['sizeX'],image_tiles_info['sizeY']]
@@ -507,7 +607,8 @@ def main(args):
             n_frames = len(image_tiles_info["frames"]),
             image_id=image_id,
             gc = gc,
-            user_token = args.girderToken
+            user_token = args.girderToken,
+            post_processor=args.post_processor
         )
 
         with tqdm(all_nuc_annotations[0]["annotation"]["elements"],total = n_nuclei) as pbar:
