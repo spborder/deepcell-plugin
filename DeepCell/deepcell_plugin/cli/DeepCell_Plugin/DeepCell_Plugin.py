@@ -273,17 +273,26 @@ class FeatureExtractor:
                 'Area': float(np.sum(labeled_nuc_mask==i))
             }
 
-            for c,v in rasterio.features.shapes(np.uint8(labeled_nuc_mask==i),connectivity=8):
-                
-                nuc_poly = shape(c)
-                bbox = list(nuc_poly.bounds)
+            nuc_contours = find_contours(labeled_nuc_mask==i)
+            nuc_polys = []
+            for n in nuc_contours:
+                if len(n)>3:
+                    nuc_polys.append(
+                        Polygon([(i[1],i[0]) for i in n])
+                    )
 
-                self.annotations.add_shape(
-                    poly = nuc_poly,
-                    box_crs = [nuc_bbox[0]+bbox[0],nuc_bbox[1]+bbox[1]],
-                    structure = 'CODEX Nuclei',
-                    properties = feature_dict
-                )
+            if len(nuc_polys)>0:
+                largest_idx = np.argmax([i.area for i in nuc_polys])
+                if nuc_polys[largest_idx].area > 500:
+                    nuc_poly = nuc_polys[largest_idx]
+
+                    self.annotations.add_shape(
+                        poly = nuc_poly,
+                        box_crs = [nuc_bbox[0],nuc_bbox[1]],
+                        structure = 'CODEX Nuclei',
+                        properties = feature_dict
+                    )
+            
 
         
 def get_tissue_mask(gc,token,image_item_id):
@@ -452,38 +461,33 @@ def main(args):
                 patch_box = box(new_patch.left,new_patch.top,new_patch.right,new_patch.bottom)
                 if any([patch_box.intersects(i) for i in tissue_mask]):
                     patch_batch.append(new_patch)
-                else:
-                    patch_batch.append(None)
+
         except StopIteration:
             print('All out!')
 
         if len(patch_batch)>0:
-            if not all([i is None for i in patch_batch]):
-                region_annotations = cell_finder.predict(patch_batch,args.nuclei_frame)
+            region_annotations = cell_finder.predict(patch_batch,args.nuclei_frame)
 
-                for y in range(batch_size):
+            for y_patch,y_annotations in zip(patch_batch,region_annotations):
 
-                    y_patch = patch_batch[y]
-                    patch_box = box(y_patch.left,y_patch.top,y_patch.right,y_patch.bottom)
+                patch_box = box(y_patch.left,y_patch.top,y_patch.right,y_patch.bottom)
 
-                    y_annotations = region_annotations[y]
+                # Creating the region filter
+                region_filter = make_patch_filter(
+                    intersect_regions = [i for i in tissue_mask if patch_box.intersects(i)],
+                    test_patch = patch_box
+                )
 
-                    # Creating the region filter
-                    region_filter = make_patch_filter(
-                        intersect_regions = [i for i in tissue_mask if patch_box.intersects(i)],
-                        test_patch = patch_box
-                    )
+                # Getting the same region from the tissue mask
+                y_annotations = y_annotations[:,:,0] * region_filter
+                y_annotations = label(y_annotations)[:,:,None]
 
-                    # Getting the same region from the tissue mask
-                    y_annotations = y_annotations[:,:,0] * region_filter
-                    y_annotations = label(y_annotations)[:,:,None]
-
-                    patch_annotations.add_patch_mask(
-                        mask = y_annotations,
-                        patch_obj = y_patch,
-                        mask_type = 'one-hot-labeled',
-                        structure = ['CODEX Nuclei']
-                    )
+                patch_annotations.add_patch_mask(
+                    mask = y_annotations,
+                    patch_obj = y_patch,
+                    mask_type = 'one-hot-labeled',
+                    structure = ['CODEX Nuclei']
+                )
 
 
     print('--------------------------------------------------')
